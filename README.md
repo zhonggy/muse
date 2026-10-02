@@ -466,66 +466,129 @@ python tools/test_resin.py
 
 ## 6. 反检测
 
-muse.ai 是 Meta 的产品，对自动化很敏感。浏览器侧做了两层处理，都在
-「设置 → 浏览器与任务 → 反检测」一个开关控制（`MUSE_STEALTH`，默认开）。
+muse.ai 是 Meta 的产品，对自动化很敏感。这里分两个层次做。
 
-### 6.1 启动参数
+### 6.1 内核选择
+
+「设置 → 浏览器与任务 → 浏览器内核」（`MUSE_BROWSER_ENGINE`）：
+
+| 内核 | 说明 |
+|---|---|
+| **`camoufox`**（默认） | 基于 **Firefox 152** 的反检测内核。指纹在**浏览器层**伪造，不是 JS 补丁 |
+| `chromium` | Playwright 自带 Chromium + `app/stealth.py` 的 JS 层伪装 |
+
+两者的反检测思路完全不同，**不能叠加** —— 详见 6.4。
+
+### 6.2 Camoufox（默认）
+
+指纹由 `fpgen` 生成，`AsyncNewContext()` **每个 context 一套独立身份**
+（navigator / screen / WebGL / 字体 / 语音 / 音频噪声），
+通过 `addInitScript` 注入并在页面脚本执行前自毁。
+
+关键能力：
+
+- **Navigator / screen / WebGL 参数 / 字体 / 音频指纹** 全套伪造
+- **每个 context 独立身份** —— 正好对上「一个任务一个账号」的模型
+- **per-context proxy** —— 直接对接 Resin 的每任务身份
+- **按代理出口 IP 推导时区/地理位置**（`camoufox_geoip`），让时区与 IP 自洽
+- **鼠标轨迹人性化**（`camoufox_humanize`），对抗行为检测
+- **内置 uBlock Origin**
+
+一致性校验：`camoufox/coherence.py` 会拒绝「Windows UA 配 Apple M1 显卡」
+这类不可能组合。
+
+相关设置：
+
+| 项 | 默认 | 说明 |
+|---|---|---|
+| `camoufox_os` | `windows` | 伪造的目标系统 |
+| `camoufox_humanize` | 开 | 鼠标轨迹人性化 |
+| `camoufox_geoip` | 开 | 按出口 IP 推导时区 |
+| `camoufox_headless_mode` | 空 | 空=原生 headless；`virtual`=Linux 上用 Xvfb 真渲染 |
+
+### 6.3 Chromium（备选）
+
+靠 `app/stealth.py` 在 JS 层抹特征：
+
+**启动参数**
 
 ```python
 "--disable-blink-features=AutomationControlled",   # 去掉「被自动化控制」标记
-"--no-first-run", "--no-default-browser-check", "--disable-infobars",
-"--disable-component-update", "--disable-background-networking",
-"--disable-sync", "--disable-extensions", "--mute-audio",
-"--force-color-profile=srgb", "--lang=zh-CN",
+"--no-first-run", "--no-default-browser-check", "--disable-infobars", ...
 ```
 
-另外用 `ignore_default_args=["--enable-automation"]` **剔掉 Playwright 自己加的
-`--enable-automation`** —— 那正是 `navigator.webdriver` 的来源，光靠上面那个
-blink 开关盖不住。
+外加 `ignore_default_args=["--enable-automation"]` —— **剔掉 Playwright 自己加的
+`--enable-automation`**，那才是 `navigator.webdriver` 变 true 的真正来源，
+光靠 blink 开关盖不住。
 
-### 6.2 页面注入（文档创建前）
+**页面注入**
 
 | 特征 | 处理 |
 |---|---|
-| `navigator.webdriver` | 从 `Navigator.prototype` 上**整个 delete**，删不掉才退化成返回 undefined 的 getter |
-| `window.chrome` | 补全 `runtime` / `app` / `csi()` / `loadTimes()`（headless 下是个空壳） |
-| `navigator.plugins` / `mimeTypes` | 造出 5 个 PDF 插件、10 个 mime；**挂到原生 `PluginArray.prototype` 上**，否则 `instanceof PluginArray` 是 false |
-| `navigator.pdfViewerEnabled` | `true` |
-| `Notification.permission` | `default`（Playwright 默认设成 `denied`） |
-| `permissions.query` | 通知类返回 `default`，其余透传原生实现 |
-| Client Hints | 补 `navigator.userAgentData` + 同值的 `Sec-CH-UA` 请求头 |
-| WebGL | `UNMASKED_VENDOR/RENDERER` 换成 Intel UHD 630，盖掉 SwiftShader 软渲染 |
-| 媒体编解码器 | `canPlayType` 补上 H.264/AAC（Playwright 的 Chromium 不含专有编解码器） |
-| `deviceMemory` / `maxTouchPoints` / `hardwareConcurrency` | 补成正常桌面值 |
-| `__playwright__binding__` / `__pwInitScripts` | 先设为不可枚举，DOMContentLoaded 后再删 |
-| `Function.prototype.toString` | 让被替换的函数仍报 `[native code]` |
+| `navigator.webdriver` | 保留真 Chrome 的 getter 形状，返回 `false` |
+| `window.chrome` | 补全 `runtime` / `app` / `csi()` / `loadTimes()` |
+| `navigator.plugins` / `mimeTypes` | 造 5 个 PDF 插件 + 10 个 mime，挂到**原生 `PluginArray.prototype`** 上 |
+| `Notification.permission` | `default`（Playwright 默认 `denied`） |
+| `permissions.query` | 通知类返回 `default`，其余透传 |
+| Client Hints | 补 `userAgentData` + 同值的 `Sec-CH-UA` 请求头 |
+| WebGL | `UNMASKED_VENDOR/RENDERER` 换成 Intel UHD 630 |
+| 媒体编解码器 | `canPlayType` 补 H.264/AAC |
+| `Function.prototype.toString` | 被替换的函数仍报 `[native code]` |
 
-> ⚠️ 最后一项的顺序很关键：**不能在 document-start 阶段删 `__pwInitScripts`**。
+> ⚠️ 关于 `navigator.webdriver`：**不要 delete 成 `undefined`**。
+> 真实 Chrome 是 `Navigator.prototype` 上一个返回 `false` 的 WebIDL getter，
+> 删掉反而不像真 Chrome。真正让它变 `true` 的 `--enable-automation`
+> 已经在启动参数里剔除了。
+
+### 6.4 两种内核互斥的地方
+
+Camoufox 自己就把指纹做完了，**再叠一层面向 Chromium 的 JS 伪装会自相矛盾**：
+Firefox 不该有 `window.chrome`、不该报 ANGLE 显卡串、不该有 Client Hints。
+所以 `build_stealth_js()` **只在 chromium 下注入**。
+
+但有一件事**两种内核都要做**：
+
+```python
+PLAYWRIGHT_CLEANUP_JS   # 清理 __playwright__binding__ / __pwInitScripts
+```
+
+这些键是 **Playwright 注入的，与浏览器内核无关**，Camoufox 也不管。
+
+> ⚠️ 顺序很关键：**不能在 document-start 阶段删 `__pwInitScripts`**。
 > Playwright 靠它注册并注入所有 `add_init_script` 脚本，提前删掉会把
 > `window.__museHelpers` 一起弄没，整个流程直接崩。所以是「先隐藏、后删除」。
 
-### 6.3 所有伪造值同源
+### 6.5 容器里必须装 Mesa
 
-UA、`Sec-CH-UA` 请求头、`navigator.userAgentData`、`chrome.*` 里的版本号
-全部从**同一个 Chrome 大版本号**派生（取自 Playwright 报的真实浏览器版本）。
-检测器最常抓的不是某个特征单独存在，而是**几个特征互相矛盾** ——
-比如 UA 写 Chrome/131 而 Client Hints 写 130。
+无 GPU 的容器里，Firefox 需要 Mesa 的 llvmpipe 才能提供 WebGL。
+Dockerfile 里装了 `libgl1-mesa-dri` 等一组包。
 
-### 6.4 自测
+> **一个没有 WebGL 的浏览器本身就是极强的机器人特征** —— 比任何 JS 层指纹都显眼。
+> 实测缺了 Mesa 时 `canvas.getContext('webgl')` 直接返回 `null`。
+> Mesa 走软渲染，但 Camoufox 会在浏览器层把渲染器串伪造成真实显卡，不会因此露馅。
+
+### 6.6 自测
 
 ```bash
-python tools/probe_stealth.py     # 40 项特征逐条比对
+python tools/probe_stealth.py            # 默认 camoufox
+python tools/probe_stealth.py chromium   # 测 chromium
 ```
+
+探针是**内核感知**的：`window.chrome` / `PluginArray` / Client Hints 这些
+Chrome 专有特征在 Firefox 下本就不该存在，检查它们没有意义。
 
 实测结果：
 
 ```
-自己的探针          40 项  ->  失败 0
-bot.sannysoft.com   57 项  ->  失败 0，警告 0
+camoufox   探针 19 项   -> 失败 0
+chromium   探针 20 项   -> 失败 0
+bot.sannysoft.com 57 项：
+    camoufox -> 失败 1（Chrome 专有用例，真 Firefox 同样如此，属自洽）
+    chromium -> 失败 0
 ```
 
-改之前是 **34 项挂 16 项**（plugins 为 0、SwiftShader 软渲染、
-`__playwright__binding__` 暴露、`permissions.query` 非原生代码……）。
+> Camoufox 那一项「失败」是 sannysoft 在检查 `window.chrome` 是否存在 ——
+> 我们的 UA 是 Firefox，没有这个对象才是对的。
 
 ---
 
@@ -624,6 +687,9 @@ muse.ai 改版时**不需要改代码**：在 `data/selectors.json` 里覆盖即
 | 所有请求都失败且日志提示 Account | Resin 已启用但拿不到身份。确认任务邮箱已生成，或 skymail 登录邮箱已填 |
 | 想临时绕过 Resin 排查 | 设置页取消勾选「启用 Resin」→ 保存，所有请求改直连 |
 | 页面渲染异常 / 元素找不到 | 先试关掉「反检测」确认是不是 stealth 脚本引起的。`python tools/probe_stealth.py` 可单独验证 |
+| 容器内 WebGL 不可用 | 镜像缺 Mesa。`docker compose exec muse-auto python -c "import os;print(os.path.exists('/usr/lib/x86_64-linux-gnu/dri/swrast_dri.so'))"` |
+| Camoufox 启动报找不到浏览器 | 没跑 `python -m camoufox fetch`。`docker compose exec muse-auto python -m camoufox fetch` |
+| 想对比两个内核的检测表现 | `python tools/probe_stealth.py camoufox` 与 `python tools/probe_stealth.py chromium` |
 | `__museHelpers is undefined` | stealth 脚本把 Playwright 的 init script 机制弄坏了。检查 `app/stealth.py` 里删 `__pwInitScripts` 的时机，必须在 DOMContentLoaded 之后 |
 
 ---
