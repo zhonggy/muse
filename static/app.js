@@ -11,7 +11,49 @@
     wsToken: '',
     shots: {},
     wsOk: false,
+    renderedLogs: 0,
   };
+
+  // 用户改过、还没保存的字段。定时刷新时不能覆盖它们，
+  // 否则每 8 秒一次 reload() 会把正在输的内容冲掉。
+  const dirtyFields = new Set();
+
+  function markDirty(id, on) {
+    const el = $(id);
+    if (el) el.classList.toggle('unsaved', !!on);
+  }
+
+  function markFieldDirty(id) {
+    dirtyFields.add(id);
+    markDirty(id, true);
+  }
+
+  function clearDirty() {
+    dirtyFields.forEach((id) => markDirty(id, false));
+    dirtyFields.clear();
+  }
+
+  function isEditing(id) {
+    if (dirtyFields.has(id)) return true;
+    const el = $(id);
+    return !!el && document.activeElement === el;
+  }
+
+  // 给所有会被定时刷新同步的输入控件挂上脏标记
+  function bindDirtyGuard() {
+    const ids = [
+      ...Object.keys(SETTING_FIELDS),
+      ...Object.keys(SETTING_CHECKS),
+      'concurrency', 'count', 'taskCard', 's_default_card_id',
+    ];
+    ids.forEach((id) => {
+      const el = $(id);
+      if (!el) return;
+      const mark = () => markFieldDirty(id);
+      el.addEventListener('input', mark);
+      el.addEventListener('change', mark);
+    });
+  }
 
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
@@ -133,7 +175,10 @@
         renderTasks();
         break;
       case 'log':
-        if (msg.task_id === state.selected) appendLog(msg);
+        if (msg.task_id === state.selected) {
+          appendLog(msg);
+          state.renderedLogs += 1;
+        }
         break;
       case 'shot':
         state.shots[msg.task_id] = msg;
@@ -235,15 +280,29 @@
   function selectTask(id) {
     state.selected = id;
     $('logs').innerHTML = '';
+    state.renderedLogs = 0;
     $('live').removeAttribute('src');
     $('viewer').classList.remove('live');
     renderTasks();
     renderDetail();
     if (!id) { $('detailTitle').textContent = '实时画面'; $('detailActions').innerHTML = ''; return; }
-    const t = state.tasks.find((x) => x.id === id);
-    if (t) (t.logs || []).forEach(appendLog);
+    syncLogs();
     const shot = state.shots[id];
     if (shot) showShot(shot);
+  }
+
+  // 只补增量，不重画。否则每 8 秒一次的定时刷新会让日志面板闪一下。
+  function syncLogs() {
+    const t = state.tasks.find((x) => x.id === state.selected);
+    if (!t) return;
+    const logs = t.logs || [];
+    if (logs.length < state.renderedLogs) {
+      // 服务端截断过日志，只能整体重画
+      $('logs').innerHTML = '';
+      state.renderedLogs = 0;
+    }
+    for (let i = state.renderedLogs; i < logs.length; i += 1) appendLog(logs[i]);
+    state.renderedLogs = logs.length;
   }
 
   function renderDetail() {
@@ -422,7 +481,9 @@
     if (keep) sel.value = keep;
 
     const dsel = $('s_default_card_id');
-    const dkeep = state.settings.default_card_id || '';
+    const dkeep = isEditing('s_default_card_id')
+      ? dsel.value
+      : (state.settings.default_card_id || '');
     dsel.innerHTML = '<option value="">（无）</option>'
       + state.cards.map((c) => `<option value="${c.id}">${esc(c.label)} ${esc(c.pan_masked)}</option>`).join('');
     dsel.value = dkeep;
@@ -508,6 +569,7 @@
     for (const [id, key] of Object.entries(SETTING_FIELDS)) {
       const el = $(id);
       if (!el) continue;
+      if (isEditing(id)) continue;   // 正在编辑 / 未保存，不要覆盖
       if (key === 'skymail_password') {
         el.value = '';
         el.placeholder = s.skymail_password_set ? '已设置（留空表示不修改）' : '未设置';
@@ -517,12 +579,12 @@
     }
     for (const [id, key] of Object.entries(SETTING_CHECKS)) {
       const el = $(id);
-      if (el) el.checked = !!s[key];
+      if (el && !isEditing(id)) el.checked = !!s[key];
     }
     const cEl = $('concurrency');
-    if (cEl) cEl.value = s.concurrency || 1;
+    if (cEl && !isEditing('concurrency')) cEl.value = s.concurrency || 1;
     const lvEl = $('liveView');
-    if (lvEl) lvEl.checked = s.live_view !== false;
+    if (lvEl && !isEditing('liveView')) lvEl.checked = s.live_view !== false;
     renderViewerState();
     fillCardSelect();
   }
@@ -544,6 +606,7 @@
         if (el) patch[key] = el.checked;
       }
       await api('PUT', '/api/settings', patch);
+      clearDirty();
       $('settingsResult').textContent = '已保存 ✓';
       toast('设置已保存', 'ok');
     }));
@@ -697,7 +760,14 @@
     fillSettings();
     renderCards();
     renderTasks();
-    if (state.selected) selectTask(state.selected);
+    // 不要重新 selectTask：那会清空日志和实时画面，每 8 秒闪一次
+    if (state.selected && !state.tasks.some((t) => t.id === state.selected)) {
+      state.selected = null;
+      $('logs').innerHTML = '';
+      state.renderedLogs = 0;
+    }
+    renderDetail();
+    syncLogs();
     const running = state.tasks.filter((t) => t.status === 'running').length;
     $('statLine').textContent = `共 ${state.tasks.length} 个任务 / 运行中 ${running}`;
   }
@@ -713,9 +783,13 @@
     $('liveView').addEventListener('change', guard(async (e) => {
       const s = await api('PUT', '/api/settings', { live_view: e.target.checked });
       state.settings = s;
+      dirtyFields.delete('liveView');
+      markDirty('liveView', false);
       renderViewerState();
       toast(e.target.checked ? '实时画面已开启' : '实时画面已关闭', 'ok');
     }));
+
+    bindDirtyGuard();
 
     try {
       await ensureToken();
@@ -730,8 +804,7 @@
       if (document.visibilityState === 'visible') {
         reload().catch(() => {});
       }
-    }, 8000);
-  }
+    }, 8000);  }
 
   document.addEventListener('DOMContentLoaded', boot);
 })();

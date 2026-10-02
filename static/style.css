@@ -135,6 +135,12 @@ input, textarea, select {
   width: 100%;
 }
 input:focus, textarea:focus, select:focus { border-color: var(--accent); }
+
+/* 改过但还没保存 —— 提醒用户定时刷新不会冲掉它 */
+input.unsaved, select.unsaved, textarea.unsaved {
+  border-color: var(--warn);
+  box-shadow: 0 0 0 1px rgba(232,176,75,.22);
+}
 textarea { resize: vertical; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 
 .row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
