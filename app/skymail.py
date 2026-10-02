@@ -103,6 +103,9 @@ class SkymailClient:
         )
         self._token: str | None = None
         self._accounts: list[dict] | None = None
+        # 某些 skymail 实例的 /api/email/list 是坏的（恒返 500 D1_TYPE_ERROR），
+        # 坏一次就记下来，后面直接走 /api/allEmail/list
+        self._email_list_broken = False
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -181,11 +184,57 @@ class SkymailClient:
 
     # ---------------- 邮箱地址 ----------------
 
+    @property
+    def email_list_broken(self) -> bool:
+        """/api/email/list 是否已确认不可用。"""
+        return self._email_list_broken
+
+    def mark_email_list_broken(self) -> None:
+        self._email_list_broken = True
+
     async def list_accounts(self, size: int = 30) -> list[dict]:
         await self.login()
         data = await self._request("GET", "/api/account/list", params={"size": size})
         self._accounts = list(data or [])
         return self._accounts
+
+    async def list_all_accounts(self, size: int = 30, max_pages: int = 40) -> list[dict]:
+        """翻页拉全部邮箱。
+
+        account/list 每页最多 30 条（按置顶顺序），邮箱一多，新建的就落在后面几页，
+        只查第一页会找不到。
+        """
+        await self.login()
+        out: list[dict] = []
+        seen: set = set()
+        cursor = None
+        last_sort = None
+        for _ in range(max_pages):
+            params: dict = {"size": size}
+            if cursor is not None:
+                params["accountId"] = cursor
+                params["lastSort"] = last_sort
+            try:
+                page = await self._request("GET", "/api/account/list", params=params)
+            except SkymailError:
+                break
+            if not page:
+                break
+            added = 0
+            for acc in page:
+                aid = acc.get("accountId")
+                if aid in seen:
+                    continue
+                seen.add(aid)
+                out.append(acc)
+                added += 1
+            last = page[-1]
+            if added == 0 or last.get("accountId") == cursor:
+                break
+            cursor = last.get("accountId")
+            last_sort = last.get("sort")
+        self._accounts = out
+        return out
 
     async def find_account(self, email: str) -> dict | None:
         target = email.strip().lower()
@@ -193,9 +242,18 @@ class SkymailClient:
         for acc in accounts:
             if str(acc.get("email", "")).strip().lower() == target:
                 return acc
-        # 退一步：按前缀匹配
+        # 第一页没找到（邮箱太多）→ 翻全部页再找
+        try:
+            accounts = await self.list_all_accounts()
+        except SkymailError:
+            accounts = self._accounts or []
         for acc in accounts:
-            if str(acc.get("email", "")).strip().lower().startswith(target.split("@")[0]):
+            if str(acc.get("email", "")).strip().lower() == target:
+                return acc
+        # 退一步：按前缀匹配
+        prefix = target.split("@")[0]
+        for acc in accounts:
+            if str(acc.get("email", "")).strip().lower().startswith(prefix):
                 return acc
         return None
 
@@ -261,14 +319,6 @@ class SkymailClient:
             }
         raise SkymailError(f"连续 {attempts} 次都无法创建邮箱：{last_err}")
 
-    async def ensure_account(self, email: str) -> dict:
-        """确保目标邮箱存在于 skymail 账号下，返回 account 记录。"""
-        acc = await self.find_account(email)
-        if acc:
-            return acc
-        created = await self.add_account(email)
-        return created or {"email": email}
-
     # ---------------- 邮件 ----------------
 
     async def list_emails(
@@ -277,12 +327,23 @@ class SkymailClient:
         size: int = 10,
         full: int = 1,
     ) -> dict:
+        if self._email_list_broken:
+            raise SkymailError(
+                "该 skymail 实例的 /api/email/list 不可用，请改用 /api/allEmail/list"
+            )
         await self.login()
-        return await self._request(
-            "GET",
-            "/api/email/list",
-            params={"accountId": account_id, "size": size, "full": full},
-        )
+        try:
+            return await self._request(
+                "GET",
+                "/api/email/list",
+                params={"accountId": account_id, "size": size, "full": full},
+            )
+        except SkymailError as exc:
+            msg = str(exc)
+            if "D1_TYPE_ERROR" in msg or "code=500" in msg:
+                # 服务端 bug，记下来免得每个任务都白试一次
+                self._email_list_broken = True
+            raise
 
     async def list_all_emails(
         self,

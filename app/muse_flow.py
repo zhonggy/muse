@@ -6,10 +6,11 @@
   3. 填邮箱（SPA 受控输入，需要补派发 input/change）
   4. 点 button[type=submit]（继续）—— URL 不变，只能看界面
   5. 填 6 位验证码（满 6 位自动提交，注意前导零）
-  6. 新邮箱 → 生日页：3 个 Radix Select（必须完整 MouseEvent 序列）
-  7. 提交生日 → /access/disclosure（期间页面上下文会短暂销毁）
-  8. 点「开始」（该页有两个 submit，必须按文案精确匹配）
-  9. /access/verification → 点「验证年龄」→ 结账页填卡 → 完成后回主页
+  6. 注册补全页：有时会多出「名 / 姓」两栏，从英文姓名池随机组合填入
+  7. 生日：3 个 Radix Select（必须完整 MouseEvent 序列），年份在 1995–2002 随机
+  8. 提交 → /access/disclosure（期间页面上下文会短暂销毁）
+  9. 点「开始」（该页有两个 submit，必须按文案精确匹配）
+ 10. /access/verification → 点「验证年龄」→ 结账页填卡 → 完成后回主页
 """
 from __future__ import annotations
 
@@ -19,7 +20,8 @@ from typing import Any
 
 from playwright.async_api import Locator, Page, TimeoutError as PWTimeout
 
-from .js_helpers import CARD_PROBE_JS
+from .js_helpers import CARD_PROBE_JS, NAME_PROBE_JS
+from .names import random_full_name
 from .selectors import SELECTORS, TEXTS, URLS
 from .util import random_birthday
 
@@ -461,17 +463,21 @@ class MuseFlow:
     # --- 6/7 ---
 
     async def step_birthday(self) -> None:
-        await self.rt.set_step("填写生日")
-        await self.log("检测到注册补全页（请输入生日）")
-        await self.rt.snap("birthday-page")
+        await self.rt.set_step("填写注册资料")
+        await self.log("检测到注册补全页（完成账户创建）")
+        await self.rt.snap("profile-page")
+
+        # 这一页有时只有生日，有时上面还会多出「名 / 姓」两栏
+        await self.fill_name_fields()
+
         birthday = self.rt.task.get("birthday") or random_birthday(self.rt.settings)
         await self.set_birthday(birthday)
         await self.settle(800)
-        await self.rt.snap("birthday-filled")
+        await self.rt.snap("profile-filled")
 
-        await self.rt.set_step("提交生日")
-        await self.click_button("confirm", timeout_ms=20000)
-        await self.log("已提交生日，等待账户创建（约 15–20 秒）")
+        await self.rt.set_step("提交注册资料")
+        await self.submit_profile()
+        await self.log("已提交，等待账户创建（约 15–20 秒）")
 
         # 期间页面上下文可能短暂销毁，容忍报错
         for _ in range(60):
@@ -490,7 +496,95 @@ class MuseFlow:
             except Exception:
                 pass  # Execution context destroyed → 正常现象
             await asyncio.sleep(1.5)
-        raise FlowError("提交生日后 90 秒内未跳转，可能账户创建失败")
+        raise FlowError("提交后 90 秒内未跳转，可能账户创建失败")
+
+    # --- 6 ---
+
+    async def fill_name_fields(self) -> None:
+        """muse 有时会在生日上方多出「名 / 姓」两栏，出现就填。"""
+        try:
+            info = await self.page.evaluate(NAME_PROBE_JS)
+        except Exception as exc:
+            await self.log(f"姓名输入框探测失败：{exc}", "warn")
+            return
+
+        if not info or not info.get("found"):
+            count = (info or {}).get("inputCount", 0)
+            await self.log(f"本页没有姓名输入框，跳过（可见文本输入框 {count} 个）")
+            return
+
+        await self.log(
+            f"检测到姓名输入框：名={info.get('hasFirst')} 姓={info.get('hasLast')}"
+        )
+
+        first = str(self.rt.task.get("first_name") or "").strip()
+        last = str(self.rt.task.get("last_name") or "").strip()
+        if not first or not last:
+            first, last = random_full_name()
+            await self.rt.patch(first_name=first, last_name=last)
+            await self.log(f"随机生成姓名：{first} {last}")
+
+        if info.get("hasFirst") and first:
+            await self._fill_name_field("first", first, "名")
+        if info.get("hasLast") and last:
+            await self._fill_name_field("last", last, "姓")
+
+    async def _fill_name_field(self, kind: str, value: str, label: str) -> None:
+        loc = self.page.locator(f'[data-muse-name="{kind}"]').first
+        try:
+            await loc.wait_for(state="visible", timeout=8000)
+        except Exception as exc:
+            raise FlowError(f"找不到{label}输入框") from exc
+        try:
+            await loc.click(timeout=5000)
+        except Exception:
+            pass
+        try:
+            await loc.fill("")
+        except Exception:
+            pass
+        try:
+            await loc.press_sequentially(value, delay=45)
+        except Exception:
+            pass
+        got = ""
+        try:
+            got = (await loc.input_value()).strip()
+        except Exception:
+            pass
+        if got != value:
+            try:
+                await loc.evaluate(
+                    "(el, v) => window.__museHelpers.setValue(el, v)", value
+                )
+                got = (await loc.input_value()).strip()
+            except Exception:
+                pass
+        await self.log(f"{label}已填入：{got or value}")
+
+    async def submit_profile(self) -> None:
+        """提交注册资料。
+
+        比原来只找「确认」更宽松：
+          1. 先按 Esc 关掉可能还开着的下拉，避免遮罩吃掉点击
+          2. 按文案找（确认 / 提交 / 完成 / 下一步 …）
+          3. 再退到任意可见的 button[type=submit]
+        """
+        try:
+            await self.page.keyboard.press("Escape")
+        except Exception:
+            pass
+        await self.page.wait_for_timeout(600)
+
+        if await self.click_button("confirm", timeout_ms=15000, required=False):
+            return
+
+        btn = await self.locate("submit", timeout_ms=5000)
+        if btn is not None:
+            await self.click_locator(btn, "提交按钮（submit 兜底）")
+            return
+
+        raise FlowError(f"找不到提交按钮（当前页面：{await self._page_brief()}）")
 
     # --- 8 ---
 

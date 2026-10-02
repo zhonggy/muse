@@ -234,48 +234,46 @@ class TaskRuntime:
         client: SkymailClient = self.runner.skymail
         email = self.task["email"]
 
-        # 邮箱是我们刚通过 API 创建的，accountId 已知，直接用
-        known = self.task.get("skymail_account_id")
-        if known:
-            self._mail_source = ("account", int(known))
-            try:
-                mails = await client.poll_once(int(known), size=5)
-                self._seen_mail_ids = {int(m.get("emailId") or 0) for m in mails}
-                await self.log(
-                    f"收件箱就绪：accountId={known}，基线邮件 {len(self._seen_mail_ids)} 封"
-                )
-                return
-            except SkymailError as exc:
-                await self.log(f"按已知 accountId 读信失败：{exc}，回退查找", "warn")
-
-        try:
-            acc = await client.ensure_account(email)
-            account_id = acc.get("accountId")
+        # 1) 优先用 account 接口（若该 skymail 实例支持）
+        if not client.email_list_broken:
+            account_id = self.task.get("skymail_account_id")
+            if not account_id:
+                try:
+                    acc = await client.find_account(email)
+                    account_id = (acc or {}).get("accountId")
+                except SkymailError as exc:
+                    await self.log(f"查找邮箱账号失败：{exc}", "warn")
             if account_id:
-                self._mail_source = ("account", int(account_id))
-                mails = await client.poll_once(int(account_id), size=5)
-                self._seen_mail_ids = {int(m.get("emailId") or 0) for m in mails}
-                await self.log(
-                    f"skymail 邮箱已就绪：accountId={account_id}，"
-                    f"基线邮件 {len(self._seen_mail_ids)} 封"
-                )
-                await self.patch(skymail_account_id=int(account_id))
-                return
-        except SkymailError as exc:
-            await self.log(f"skymail 账号解析失败：{exc}", "warn")
+                try:
+                    mails = await client.poll_once(int(account_id), size=5)
+                except SkymailError as exc:
+                    await self.log(
+                        f"/api/email/list 不可用（{exc}），改用全局邮件接口", "warn"
+                    )
+                else:
+                    self._mail_source = ("account", int(account_id))
+                    self._seen_mail_ids = {int(m.get("emailId") or 0) for m in mails}
+                    await self.patch(skymail_account_id=int(account_id))
+                    await self.log(
+                        f"收件箱就绪：accountId={account_id}，"
+                        f"基线邮件 {len(self._seen_mail_ids)} 封"
+                    )
+                    return
 
-        # 退路：管理员全局邮件接口
+        # 2) 全局接口（需管理员权限，但 /api/email/list 挂了时是唯一选择）
         self._mail_source = ("all", email)
         try:
             data = await client.list_all_emails(email, size=5, full=0)
             self._seen_mail_ids = {
                 int(m.get("emailId") or 0) for m in (data or {}).get("list", [])
             }
-        except Exception:
+            await self.log(
+                "收件箱就绪（全局接口 /api/allEmail/list）：基线邮件 "
+                f"{len(self._seen_mail_ids)} 封"
+            )
+        except SkymailError as exc:
             self._seen_mail_ids = set()
-        await self.log(
-            "改用全局邮件接口（/api/allEmail/list）收码，需管理员权限", "warn"
-        )
+            await self.log(f"全局邮件接口也不可用（{exc}），收码会失败", "warn")
 
     async def _fetch_mails(self) -> list[dict]:
         client: SkymailClient = self.runner.skymail

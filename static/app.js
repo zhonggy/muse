@@ -622,6 +622,9 @@
       const parts = [`✓ ${r.user}`];
       parts.push(`可用域名 ${(r.domains || []).join(', ') || '无'}`);
       parts.push(`可见邮箱 ${r.accounts.length} 个`);
+      if (r.email_list_ok === false) {
+        parts.push('⚠️ /api/email/list 不可用，将改用 /api/allEmail/list 收码');
+      }
       if (r.created) parts.push(`试建成功：${r.created.email}`);
       $('skymailResult').textContent = parts.join(' | ');
     }));

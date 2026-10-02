@@ -27,6 +27,21 @@ SELECTORS: dict[str, list[str]] = {
     "submit": ['button[type="submit"]'],
     "combobox": ['button[role="combobox"]'],
     "option": ['[role="option"]'],
+    # 姓名输入框：优先用 JS 探针打的标记，下面这些是 CSS 兜底
+    "first_name": [
+        '[data-muse-name="first"]',
+        'input[autocomplete="given-name"]',
+        'input[name="firstName"]',
+        'input[name="first_name"]',
+        'input[id*="firstName" i]',
+    ],
+    "last_name": [
+        '[data-muse-name="last"]',
+        'input[autocomplete="family-name"]',
+        'input[name="lastName"]',
+        'input[name="last_name"]',
+        'input[id*="lastName" i]',
+    ],
     "any_button": ['button', '[role="button"]'],
     "card_number": [
         '[data-muse-fill="number"]',
@@ -73,7 +88,11 @@ TEXTS: dict[str, list[str]] = {
         "使用手机号", "登录", "Log in", "Sign in",
     ],
     "continue": ["继续", "下一步", "Continue", "Next"],
-    "confirm": ["确认", "确定", "Confirm", "Submit"],
+    "confirm": [
+        "确认", "确定", "提交", "完成", "下一步", "继续",
+        "创建账户", "完成账户创建", "创建", "保存",
+        "Confirm", "Submit", "Continue", "Next", "Done", "Save", "Create",
+    ],
     "disclosure_start": ["开始"],
     "verify_age": ["验证年龄", "验证年龄以继续"],
     "open_checkout": ["打开安全结账", "打开结账", "Open secure checkout"],

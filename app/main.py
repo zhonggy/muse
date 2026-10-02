@@ -29,6 +29,7 @@ from . import browser as browser_mod
 from .config import CONSOLE_PASSWORD, CONSOLE_USER, STATIC_DIR, ensure_dirs
 from .events import EventBus
 from .runner import STATUS_PENDING, STATUS_STOPPED, TaskRunner
+from .names import random_full_name
 from .selectors import load_overrides
 from .skymail import SkymailClient
 from .store import Store, new_id
@@ -164,6 +165,14 @@ async def api_skymail_test(payload: dict | None = Body(default=None),
                 for a in accounts
             ],
         }
+        # 探一下 /api/email/list 是否可用（有些实例是坏的，恒返 500 D1_TYPE_ERROR）
+        if accounts and accounts[0].get("accountId"):
+            try:
+                await client.list_emails(int(accounts[0]["accountId"]), size=1, full=0)
+                result["email_list_ok"] = True
+            except Exception as exc:
+                result["email_list_ok"] = False
+                result["email_list_error"] = str(exc)[:160]
         # 顺手验证「自动建邮箱」是否可用
         if payload.get("create"):
             created = await client.create_random_email()
@@ -261,6 +270,7 @@ async def api_create_tasks(payload: dict = Body(...), _: None = Depends(auth)) -
         cid = card_id
         if auto_card and cards:
             cid = cards[i % len(cards)]
+        first, last = random_full_name()
         tasks.append({
             "id": new_id("t_"),
             "email": "",                      # 启动时通过 skymail API 生成
@@ -270,6 +280,8 @@ async def api_create_tasks(payload: dict = Body(...), _: None = Depends(auth)) -
             "message": "",
             "error": "",
             "birthday": random_birthday(settings),
+            "first_name": first,               # 注册补全页出现「名/姓」时用
+            "last_name": last,
             "card_id": cid,
             "code": "",
             "logs": [],

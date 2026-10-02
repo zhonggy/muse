@@ -244,6 +244,98 @@ CARD_PROBE_JS = r"""
 """
 
 
+#: 探测页面上的姓名输入框（muse 的「完成账户创建」页有时会多出「名 / 姓」两栏）
+NAME_PROBE_JS = r"""
+() => {
+  const h = window.__museHelpers;
+
+  const SKIP_TYPE = new Set(['hidden', 'checkbox', 'radio', 'submit', 'button',
+                             'file', 'image', 'range', 'color', 'date', 'time']);
+  const inputs = h.deepAll('input').filter((el) => {
+    const t = (el.getAttribute('type') || 'text').toLowerCase();
+    if (SKIP_TYPE.has(t)) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 1 && r.height > 1 && !el.disabled && !el.readOnly;
+  });
+
+  // 拿到跟这个 input 关联的可见文案
+  const labelOf = (el) => {
+    const ids = (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean);
+    let s = ids.map((id) => {
+      const e = document.getElementById(id);
+      return e ? h.text(e) : '';
+    }).join(' ');
+    if (!s) s = el.getAttribute('aria-label') || '';
+    if (!s) {
+      const lab = el.closest('label');
+      if (lab) s = h.text(lab);
+    }
+    if (!s) {
+      let prev = el.previousElementSibling;
+      while (prev && !s) { s = h.text(prev); prev = prev.previousElementSibling; }
+    }
+    if (!s && el.parentElement) s = h.text(el.parentElement);
+    return s || '';
+  };
+
+  const attrSig = (el) => [
+    el.getAttribute('autocomplete') || '',
+    el.getAttribute('name') || '',
+    el.id || '',
+    el.getAttribute('placeholder') || '',
+    el.getAttribute('aria-label') || '',
+    el.getAttribute('data-testid') || '',
+  ].join(' ').toLowerCase();
+
+  // 去掉「必填 / 选填 / *」之类的标记后再比
+  const cleanLabel = (s) => s.replace(/必填|选填|選填|\*/g, '').replace(/\s+/g, '').trim();
+
+  const classify = (el) => {
+    const sig = attrSig(el);
+    if (/given[-_]?name|first[-_]?name|\bgiven\b|\bfname\b/.test(sig)) return 'first';
+    if (/family[-_]?name|last[-_]?name|surname|\blast\b|\blname\b/.test(sig)) return 'last';
+    const lab = cleanLabel(labelOf(el));
+    if (lab === '名' || lab === '名字') return 'first';
+    if (lab === '姓' || lab === '姓氏') return 'last';
+    return '';
+  };
+
+  inputs.forEach((el) => el.removeAttribute('data-muse-name'));
+
+  const found = { first: null, last: null };
+  const marks = [];
+  for (const el of inputs) {
+    const kind = classify(el);
+    marks.push({ kind: kind || '?', label: cleanLabel(labelOf(el)).slice(0, 40),
+                 sig: attrSig(el).slice(0, 70) });
+    if (kind && !found[kind]) {
+      found[kind] = el;
+      el.setAttribute('data-muse-name', kind);
+    }
+  }
+
+  // 兜底：页面上正好剩两个未分类的文本输入 → 按 DOM 顺序当作 名 / 姓
+  // （中文页面里「名」在「姓」前面）
+  const rest = inputs.filter((el) => !el.getAttribute('data-muse-name'));
+  if ((!found.first || !found.last) && rest.length === 2) {
+    if (!found.first) { found.first = rest[0]; rest[0].setAttribute('data-muse-name', 'first'); }
+    if (!found.last) { found.last = rest[1]; rest[1].setAttribute('data-muse-name', 'last'); }
+  } else if (!found.first && rest.length === 1) {
+    found.first = rest[0];
+    rest[0].setAttribute('data-muse-name', 'first');
+  }
+
+  return {
+    found: !!(found.first || found.last),
+    hasFirst: !!found.first,
+    hasLast: !!found.last,
+    inputCount: inputs.length,
+    marks,
+  };
+}
+"""
+
+
 #: 探测页面上的提交按钮文案
 SUBMIT_BUTTONS_JS = r"""
 () => {
