@@ -25,11 +25,18 @@ COPY requirements.txt .
 #   - camoufox（默认）：Firefox 152 反检测内核，靠 `camoufox fetch` 下载
 #   - chromium（备选）：`playwright install chromium`
 # `install-deps firefox` 装的是 Firefox 运行时依赖，Camoufox 同为 Firefox 构建，通用。
-# xvfb 供 camoufox 的 headless="virtual" 模式使用（真实渲染，比原生 headless 更难识别）。
+#
+# 另外两组非可选依赖：
+#   xvfb + mesa —— 无 GPU 的容器里 Firefox 靠它们才能跑起来 WebGL。
+#   实测缺了 Mesa 时 `canvas.getContext('webgl')` 直接返回 null，
+#   而「没有 WebGL 的浏览器」本身就是极强的机器人特征。
+#   Mesa 走 llvmpipe 软渲染，但 Camoufox 会在浏览器层把渲染器串伪造成
+#   真实显卡，所以不会因此露馅。
 RUN pip install -r requirements.txt \
     && playwright install --with-deps chromium \
     && playwright install-deps firefox \
     && apt-get install -y --no-install-recommends xvfb \
+        libgl1-mesa-dri libglx-mesa0 libgl1 libegl1 libgles2 libglu1-mesa \
     && python -m camoufox fetch \
     && rm -rf /var/lib/apt/lists/* /tmp/* /root/.cache/pip
 

@@ -3,7 +3,8 @@
 把 [`muse-ai-login-sop.md`](./muse-ai-login-sop.md) 里手工记录的那套「邮箱 + 验证码」流程，
 做成一个**跑在服务器上、带 Web 控制台**的自动化服务：
 
-- 后端：FastAPI + Playwright（Chromium）
+- 后端：FastAPI + Playwright
+- 浏览器内核：**Camoufox**（Firefox 152 反检测内核，默认）/ Chromium（备选）
 - 前端：单页控制台（无构建，原生 JS）
 - 验证码：对接 [skymail.ink](https://doc.skymail.ink/api/api-doc.html) 邮件 API 自动收码
 - 部署：Docker / docker-compose，一条命令起来
@@ -556,7 +557,12 @@ pending ──start──▶ running ──┬──▶ success   （已回到�
 | `MUSE_SECRET_KEY` | 自动生成 | 卡片加密密钥（Fernet key 或任意字符串） |
 | `HOST_PORT` | `8080` | 宿主机端口 |
 | `SKYMAIL_BASE_URL` / `SKYMAIL_EMAIL` / `SKYMAIL_PASSWORD` | — | 收码账号 |
+| `MUSE_BROWSER_ENGINE` | `camoufox` | 浏览器内核：`camoufox` / `chromium` |
 | `MUSE_HEADLESS` | `true` | 无头模式 |
+| `MUSE_CAMOUFOX_OS` | `windows` | Camoufox 伪造的目标系统 |
+| `MUSE_CAMOUFOX_HUMANIZE` | `true` | 鼠标轨迹人性化 |
+| `MUSE_CAMOUFOX_GEOIP` | `true` | 按代理出口 IP 推导时区 |
+| `MUSE_CAMOUFOX_HEADLESS_MODE` | 空 | 空=原生 headless；`virtual`=Linux 上用 Xvfb 真渲染 |
 | `MUSE_STEALTH` | `true` | 反检测：抹掉自动化特征 |
 | `MUSE_CONCURRENCY` | `1` | 并行任务数（每个任务一个独立 BrowserContext） |
 | `MUSE_BIRTHDAY_YEAR_MIN` / `MUSE_BIRTHDAY_YEAR_MAX` | `1995` / `2002` | 生日随机年份范围（不手填） |
@@ -631,7 +637,7 @@ muse.ai 改版时**不需要改代码**：在 `data/selectors.json` 里覆盖即
 │   ├── runner.py        TaskRuntime（流程对外接口）/ TaskRunner（并发调度）
 │   ├── muse_flow.py     muse.ai 全流程（注册资料 + 支付表单 + 等待验证完成）
 │   ├── browser.py       Playwright Browser 生命周期 + 启动参数 + 正代注入
-│   ├── stealth.py       反检测：启动参数与页面注入脚本（值从同一大版本号派生）
+│   ├── stealth.py       反检测（chromium 用）：启动参数 + JS 层伪装 + Playwright 残留清理
 │   ├── resin.py         Resin 代理池（反代 URL / 正代凭据 / 身份上下文）
 │   ├── skymail.py       skymail API 客户端（经 Resin 反代）+ 验证码正则抽取
 │   ├── names.py         英文姓名池（100 名 / 100 姓）
@@ -645,7 +651,7 @@ muse.ai 改版时**不需要改代码**：在 `data/selectors.json` 里覆盖即
 ├── static/              控制台前端（index.html / app.js / style.css）
 ├── tools/
 │   ├── probe_muse.py    真实站点选择器探针
-│   ├── probe_stealth.py 反检测自测（40 项特征逐条比对）
+│   ├── probe_stealth.py 反检测自测（内核感知，两种内核分别比对）
 │   └── test_resin.py    Resin 接入自测（起假 Resin 服务跑断言）
 ├── scripts/             dev.sh / deploy.sh
 ├── data/                运行时数据（store.json、secret.key、sessions/、shots/）
