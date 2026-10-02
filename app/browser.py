@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import sys
 from typing import Any
 
 from playwright.async_api import Browser, BrowserContext, Playwright, async_playwright
@@ -97,8 +98,14 @@ class BrowserManager:
             ) from exc
 
         headless = bool(settings.get("headless", True))
-        # Linux 上 'virtual' 会用 Xvfb 跑真实渲染，比原生 headless 更不容易被识别
-        if headless and str(settings.get("camoufox_headless_mode") or "") == "virtual":
+        # Linux 上原生 headless 没有显示服务器，canvas.getContext('webgl') 直接返回 null，
+        # 而「没有 WebGL 的浏览器」是极强的机器人特征。
+        # Xvfb 提供一个真实 X display，Mesa 的 llvmpipe 才能提供 GL。
+        # 实测：headless=True -> webgl=null；headless='virtual' -> webgl 正常。
+        mode = str(settings.get("camoufox_headless_mode") or "virtual").strip().lower()
+        if mode == "off":
+            headless = True
+        elif headless and sys.platform.startswith("linux"):
             headless = "virtual"  # type: ignore[assignment]
 
         locales = _accept_languages(settings)

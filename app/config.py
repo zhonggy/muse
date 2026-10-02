@@ -65,8 +65,8 @@ DEFAULT_SETTINGS: dict = {
     "camoufox_humanize": _bool("MUSE_CAMOUFOX_HUMANIZE", True),
     # 按代理出口 IP 推导时区/地理位置（让时区与 IP 自洽）
     "camoufox_geoip": _bool("MUSE_CAMOUFOX_GEOIP", True),
-    # 空 = 原生 headless；virtual = Linux 上用 Xvfb 跑真实渲染
-    "camoufox_headless_mode": os.getenv("MUSE_CAMOUFOX_HEADLESS_MODE", ""),
+    # virtual = Linux 上用 Xvfb 跑真实渲染（**必须**，否则 WebGL 不可用）；off = 原生 headless
+    "camoufox_headless_mode": os.getenv("MUSE_CAMOUFOX_HEADLESS_MODE", "virtual"),
     "headless": _bool("MUSE_HEADLESS", True),
     "slow_mo": _int("MUSE_SLOW_MO", 0),
     # 反检测：仅对 chromium 内核生效（camoufox 在浏览器层自己处理）

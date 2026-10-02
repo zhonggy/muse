@@ -504,7 +504,7 @@ muse.ai 是 Meta 的产品，对自动化很敏感。这里分两个层次做。
 | `camoufox_os` | `windows` | 伪造的目标系统 |
 | `camoufox_humanize` | 开 | 鼠标轨迹人性化 |
 | `camoufox_geoip` | 开 | 按出口 IP 推导时区 |
-| `camoufox_headless_mode` | 空 | 空=原生 headless；`virtual`=Linux 上用 Xvfb 真渲染 |
+| `camoufox_headless_mode` | `virtual` | Linux 上用 Xvfb 真渲染（**必须**，否则 WebGL 不可用）；`off`=原生 headless |
 
 ### 6.3 Chromium（备选）
 
@@ -564,8 +564,20 @@ PLAYWRIGHT_CLEANUP_JS   # 清理 __playwright__binding__ / __pwInitScripts
 Dockerfile 里装了 `libgl1-mesa-dri` 等一组包。
 
 > **一个没有 WebGL 的浏览器本身就是极强的机器人特征** —— 比任何 JS 层指纹都显眼。
-> 实测缺了 Mesa 时 `canvas.getContext('webgl')` 直接返回 `null`。
-> Mesa 走软渲染，但 Camoufox 会在浏览器层把渲染器串伪造成真实显卡，不会因此露馅。
+>
+> 而且 Linux 上**光装 Mesa 还不够**：原生 headless 模式没有显示服务器，
+> `canvas.getContext('webgl')` 依然返回 `null`。实测：
+>
+> ```
+> headless=True                         -> webgl = null
+> headless=True + LIBGL_ALWAYS_SOFTWARE -> webgl = null
+> headless=True + webgl.force-enabled   -> webgl = null
+> headless='virtual' (Xvfb)             -> webgl = ANGLE (AMD, Radeon R9 200 ...) ✓
+> ```
+>
+> 所以 `camoufox_headless_mode` 默认就是 `virtual`（仅 Linux 生效），
+> 由 Camoufox 自动拉起 Xvfb。Mesa 走软渲染，但 Camoufox 会在浏览器层
+> 把渲染器串伪造成真实显卡，不会因此露馅。
 
 ### 6.6 自测
 
@@ -625,7 +637,7 @@ pending ──start──▶ running ──┬──▶ success   （已回到�
 | `MUSE_CAMOUFOX_OS` | `windows` | Camoufox 伪造的目标系统 |
 | `MUSE_CAMOUFOX_HUMANIZE` | `true` | 鼠标轨迹人性化 |
 | `MUSE_CAMOUFOX_GEOIP` | `true` | 按代理出口 IP 推导时区 |
-| `MUSE_CAMOUFOX_HEADLESS_MODE` | 空 | 空=原生 headless；`virtual`=Linux 上用 Xvfb 真渲染 |
+| `MUSE_CAMOUFOX_HEADLESS_MODE` | `virtual` | Linux 上用 Xvfb 真渲染（**必须**，否则 WebGL 不可用）；`off`=原生 headless |
 | `MUSE_STEALTH` | `true` | 反检测：抹掉自动化特征 |
 | `MUSE_CONCURRENCY` | `1` | 并行任务数（每个任务一个独立 BrowserContext） |
 | `MUSE_BIRTHDAY_YEAR_MIN` / `MUSE_BIRTHDAY_YEAR_MAX` | `1995` / `2002` | 生日随机年份范围（不手填） |
