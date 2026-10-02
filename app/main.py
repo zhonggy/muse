@@ -32,6 +32,7 @@ from .runner import STATUS_PENDING, STATUS_STOPPED, TaskRunner
 from .selectors import load_overrides
 from .skymail import SkymailClient
 from .store import Store, new_id
+from .util import random_birthday
 
 logging.basicConfig(
     level=logging.INFO,
@@ -153,14 +154,21 @@ async def api_skymail_test(payload: dict | None = Body(default=None),
     try:
         info = await client.me()
         accounts = await client.list_accounts()
-        return {
+        domains = await client.list_domains()
+        result = {
             "ok": True,
             "user": info.get("name") or info.get("email"),
+            "domains": domains,
             "accounts": [
                 {"accountId": a.get("accountId"), "email": a.get("email")}
                 for a in accounts
             ],
         }
+        # 顺手验证「自动建邮箱」是否可用
+        if payload.get("create"):
+            created = await client.create_random_email()
+            result["created"] = created
+        return result
     except Exception as exc:
         raise HTTPException(400, f"连接失败：{exc}") from exc
     finally:
@@ -213,46 +221,55 @@ async def api_delete_card(card_id: str, _: None = Depends(auth)) -> dict:
 # ----------------------------------------------------------------------
 
 
-def _parse_emails(raw: Any) -> list[str]:
-    if isinstance(raw, str):
-        parts = raw.replace(",", "\n").replace(";", "\n").replace(" ", "\n").split("\n")
-    else:
-        parts = [str(x) for x in (raw or [])]
-    seen: list[str] = []
-    for p in parts:
-        e = p.strip()
-        if e and "@" in e and e.lower() not in {x.lower() for x in seen}:
-            seen.append(e)
-    return seen
-
-
 @app.post("/api/tasks")
 async def api_create_tasks(payload: dict = Body(...), _: None = Depends(auth)) -> dict:
-    emails = _parse_emails(payload.get("emails"))
-    if not emails:
-        raise HTTPException(400, "请至少提供一个邮箱")
-    settings = store.get_settings()
-    birthday = payload.get("birthday") or settings["birthday"]
-    card_id = payload.get("card_id") or ""
-    if card_id == "auto":
-        card_id = ""
-    auto_card = payload.get("card_id") == "auto"
+    """新建一批任务。
 
+    不再需要邮箱：每个任务在启动时通过 skymail API 自动创建收件邮箱。
+    入参：count（跑多少次）、concurrency（并发数）、card_id、live_view、autostart
+    """
+    try:
+        count = int(payload.get("count") or 1)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "「跑多少次」必须是数字") from None
+    if not 1 <= count <= 500:
+        raise HTTPException(400, "「跑多少次」需在 1–500 之间")
+
+    # 并发数与实时画面开关顺手写回全局设置
+    patch: dict = {}
+    if payload.get("concurrency") is not None:
+        try:
+            patch["concurrency"] = max(1, min(int(payload["concurrency"]), 8))
+        except (TypeError, ValueError):
+            pass
+    if payload.get("live_view") is not None:
+        patch["live_view"] = bool(payload["live_view"])
+    if patch:
+        await store.update_settings(patch)
+        await runner.refresh_settings()
+        bus.publish({"type": "settings", "settings": _public_settings(store.get_settings())})
+
+    settings = store.get_settings()
+    card_id = str(payload.get("card_id") or "")
+    auto_card = card_id == "auto"
+    if auto_card:
+        card_id = ""
     cards = [c["id"] for c in store.list_cards()]
+
     tasks: list[dict] = []
-    for i, email in enumerate(emails):
+    for i in range(count):
         cid = card_id
         if auto_card and cards:
             cid = cards[i % len(cards)]
         tasks.append({
             "id": new_id("t_"),
-            "email": email,
+            "email": "",                      # 启动时通过 skymail API 生成
             "status": STATUS_PENDING,
             "needs": None,
             "step": "",
             "message": "",
             "error": "",
-            "birthday": birthday,
+            "birthday": random_birthday(settings),
             "card_id": cid,
             "code": "",
             "logs": [],
@@ -272,7 +289,11 @@ async def api_create_tasks(payload: dict = Body(...), _: None = Depends(auth)) -
     if payload.get("autostart", True):
         for t in tasks:
             runner.start(t["id"])
-    return {"created": len(tasks), "tasks": [copy.deepcopy(t) for t in tasks]}
+    return {
+        "created": len(tasks),
+        "tasks": [copy.deepcopy(t) for t in tasks],
+        "concurrency": store.get_settings().get("concurrency", 1),
+    }
 
 
 @app.post("/api/tasks/{task_id}/start")

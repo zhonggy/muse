@@ -21,6 +21,7 @@ from playwright.async_api import Locator, Page, TimeoutError as PWTimeout
 
 from .js_helpers import CARD_PROBE_JS
 from .selectors import SELECTORS, TEXTS, URLS
+from .util import random_birthday
 
 MONTH_EN = [
     "January", "February", "March", "April", "May", "June",
@@ -463,7 +464,8 @@ class MuseFlow:
         await self.rt.set_step("填写生日")
         await self.log("检测到注册补全页（请输入生日）")
         await self.rt.snap("birthday-page")
-        await self.set_birthday(self.rt.task.get("birthday") or self.rt.settings["birthday"])
+        birthday = self.rt.task.get("birthday") or random_birthday(self.rt.settings)
+        await self.set_birthday(birthday)
         await self.settle(800)
         await self.rt.snap("birthday-filled")
 

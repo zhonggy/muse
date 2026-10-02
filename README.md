@@ -17,15 +17,16 @@
 
 | # | 阶段 | 实现要点 |
 |---|---|---|
-| 1 | 打开 `https://muse.ai/` | SPA，等待 hydration |
-| 2 | 展开登录表单 | 若邮箱框已可见则自动跳过 |
-| 3 | 填邮箱 | 逐字符输入 + 补派发 `input`/`change`（React 受控输入） |
-| 4 | 点「继续」 | `button[type=submit]`，URL 不变，只能看界面 |
-| 5 | 填 6 位验证码 | skymail 轮询收码；**保留前导零**；满 6 位自动提交 |
-| 6 | 生日（新邮箱） | 3 个 Radix Select，用完整 `pointerdown→mousedown→pointerup→mouseup→click` 序列 |
-| 7 | 提交生日 | 容忍页面上下文短暂销毁，最多等 90s |
-| 8 | 点「开始」 | 该页有两个 submit，**按文案精确匹配**，不误点「设置」 |
-| 9 | 年龄验证 | 点「验证年龄」→ 结账页 → 自动填卡 → 提交 → 回到主页 |
+| 1 | 通过 skymail API 自动创建收件邮箱 | `POST /api/account/add`，域名取自已有邮箱 |
+| 2 | 打开 `https://muse.ai/` | SPA，等待 hydration |
+| 3 | 展开登录表单 | 若邮箱框已可见则自动跳过 |
+| 4 | 填邮箱 | 逐字符输入 + 补派发 `input`/`change`（React 受控输入） |
+| 5 | 点「继续」 | `button[type=submit]`，URL 不变，只能看界面 |
+| 6 | 填 6 位验证码 | skymail 轮询收码；**保留前导零**；满 6 位自动提交 |
+| 7 | 生日（新邮箱） | 在 1995–2002 年内**随机**，3 个 Radix Select 用完整 `pointerdown→mousedown→pointerup→mouseup→click` 序列 |
+| 8 | 提交生日 | 容忍页面上下文短暂销毁，最多等 90s |
+| 9 | 点「开始」 | 该页有两个 submit，**按文案精确匹配**，不误点「设置」 |
+| 10 | 年龄验证 | 点「验证年龄」→ 结账页 → 自动填卡 → 提交 → 回到主页 |
 
 结束后把登录态写进 `data/sessions/<task_id>.json`（Playwright `storage_state`），可下载复用。
 
@@ -138,36 +139,49 @@ docker compose logs -f      # 看启动日志，Ctrl+C 退出（不影响容器�
 ✓ admin，可见邮箱 3 个：user1@example.com, user2@example.com, ...
 ```
 
-看到邮箱列表 = 收码链路通了。看不到目标邮箱也不用管，跑任务时会自动 `POST /api/account/add` 把它加进来。
+看到邮箱列表 = 收码链路通了。
+
+**邮箱不用你准备** —— 每个任务启动时会通过 `POST /api/account/add` 自动创建一个随机邮箱（域名取自你 skymail 里已有的邮箱）。
+点「测试连接」旁边勾上「顺便试建一个邮箱」还能顺带验证这个能力。
+
+> 如果 skymail 开了「添加邮箱需人机验证」，自动建邮箱会失败并明确报错，需要先去后台关掉。
 
 **② 录入支付卡** —— 「卡片」页
 
-填卡号 / 有效期月年 / CVV / 持卡人 / 邮编 → 「保存卡片」。
-保存后列表只显示 `************4242` 这样的脱敏卡号；卡号与 CVV 用 Fernet 加密写进 `data/store.json`。
+只要三个输入框：**卡号 / 有效期（MM/YY）/ CVV** → 「保存卡片」。
+保存后列表只显示 `************4444` 这样的脱敏卡号；卡号与 CVV 用 Fernet 加密写进 `data/store.json`。
 
 > 只想到验证页为止、暂不绑卡？跳过这步，并在「设置」里勾上 **「到年龄验证页即停止」**。
 
 **③ 建第一个任务** —— 「任务」页
 
 ```
-邮箱列表（每行一个）        生日          支付卡
-user1@example.com             1996-07-22    不绑卡（到验证页暂停）
+并发数   跑多少次   支付卡
+  1         1        不绑卡（到验证页暂停）
+☑ 启用实时画面    ☑ 创建后立即开始
 ```
 
-点「创建任务」（勾了「创建后立即开始」就会直接跑）。右侧实时画面每 1.5s 刷新一帧，日志会逐条打印：
+- **并发数**：同时跑几个，建议 1–3
+- **跑多少次**：一次性排多少个任务，每个任务自动用一个新邮箱
+- **生日不用填**，每个任务在 1995–2002 年内随机
+
+点「开始运行」。右侧实时画面每 1.5s 刷新一帧（可在同一张卡片里关掉），日志会逐条打印：
 
 ```
+[step] ▶ 创建收件邮箱
+[info] 已通过 skymail API 创建邮箱：kx7f2m9q@your-domain.com
+[info] 目标邮箱：kx7f2m9q@your-domain.com
 [step] ▶ 打开站点
 [info] 已打开 https://muse.ai/（标题：Muse — Your Personal AI Agent）
 [step] ▶ 展开登录表单
 [info] 邮箱输入框已可见，跳过展开步骤
 [step] ▶ 填写邮箱
-[info] skymail 邮箱已就绪：accountId=12，基线邮件 3 封
-[info] 邮箱已填入：user1@example.com
+[info] 收件箱就绪：accountId=12，基线邮件 0 封
+[info] 邮箱已填入：kx7f2m9q@your-domain.com
 [step] ▶ 提交邮箱并等待验证码
 [info] 已点击「继续」
 [info] 已进入验证码界面，开始轮询 skymail 收件箱
-[info] 收到邮件：「你的 Muse 验证码」（2026-10-01 12:03:11）
+[info] 收到邮件：「你的 Muse 验证码」
 [info] 取到验证码：063209（按字符串写入，保留前导零）
 ...
 [step] ▶ 年龄验证
@@ -175,8 +189,8 @@ user1@example.com             1996-07-22    不绑卡（到验证页暂停）
 [success] 年龄验证流程结束，登录态已保存
 ```
 
-> **建议第一次就这么跑**：一个邮箱 + 「到年龄验证页即停止」。
-> 只要日志能走到 `▶ 年龄验证`，说明前 8 步全通了；确认没问题再放开绑卡、上批量。
+> **建议第一次就这么跑**：并发 1、跑 1 次、勾上「到年龄验证页即停止」。
+> 只要日志能走到 `▶ 年龄验证`，说明前 9 步全通了；确认没问题再放开绑卡、上批量。
 
 登录态会落到 `data/sessions/<task_id>.json`，可在「设置」页底部下载。
 
@@ -314,24 +328,31 @@ python tools/probe_muse.py
 
 ### 4.2 「卡片」页
 
-录入卡号 / 有效期月年 / CVV / 持卡人 / 邮编。
+就三个输入框：**卡号 / 有效期 / CVV**。
 
+- 有效期支持 `MM/YY`、`MM/YYYY`、`MMYY`、`M/YY` 四种写法，输入时自动补斜杠
+- 卡号输入时自动每 4 位加空格，落库前去掉非数字字符
 - 卡号与 CVV 用 **Fernet 对称加密**后写进 `data/store.json`，其他字段明文
 - 密钥优先取 `MUSE_SECRET_KEY`，没有才用 `data/secret.key`
-- 所有 API 只返回脱敏卡号（`************4244`）
+- 所有 API 只返回脱敏卡号（`************4444`），备注名自动生成为 `卡 ****4444`
 - 任务日志里**永不出现完整卡号 / CVV**
 
 ### 4.3 「任务」页
 
 ```
-邮箱列表（每行一个）      生日        支付卡
-user1@example.com          1996-07-22  主力卡 ****4244
-user2@example.com                      自动轮换
+并发数   跑多少次   支付卡
+  2         10       主力卡 ****4444
+☑ 启用实时画面    ☑ 创建后立即开始
 ```
 
-- 邮箱可以用换行、逗号或空格分隔，自动去重
+- **并发数**（1–8）：同时跑几个任务；会自动写回全局设置
+- **跑多少次**（1–500）：一次排多少个任务
+- **收件邮箱不用填** —— 每个任务启动时调 `POST /api/account/add` 自动创建一个随机邮箱，
+  域名取 `MUSE_EMAIL_DOMAIN`，为空则取你 skymail 里已有邮箱的域名
+- **生日不用填** —— 每个任务在 `[birthday_year_min, birthday_year_max]`（默认 1995–2002）年内随机
 - 支付卡选「不绑卡」→ 跑到年龄验证页会**暂停**，控制台弹窗让你现场给卡
-- 选「自动轮换」→ 多张卡按邮箱顺序轮流分配
+- 选「自动轮换」→ 多张卡按任务顺序轮流分配
+- **启用实时画面**：关掉则不推截图（任务照跑，关键步骤仍会存盘到 `data/shots/`），省带宽和 CPU
 
 每条任务可 **开始 / 停止 / 重试 / 删除**；顶部有 **全部开始 / 全部停止 / 清理已完成 / 导出 CSV·JSON**。
 导出字段：`email, status, step, code, account_created, reached_verification, session_file, error, attempts, started_at, finished_at`。
@@ -348,8 +369,9 @@ user2@example.com                      自动轮换
 遇到 **3DS / 短信验证码 / 银行验证** 时任务会自动暂停（`needs=manual`），
 你在实时画面上手点完成后，点「我已完成人工操作」继续。
 
-> 需要关闭这个能力时，在「设置」里取消勾选「允许控制台点击接管」，
-> 后端会拒绝所有来自 WebSocket 的点击 / 按键 / 输入指令。
+> 不需要盯实时画面时，把「新建任务」里的 **启用实时画面** 取消勾选，
+> 后端会完全停掉截图循环（也接受 WebSocket 上的实时切换）。
+> 想彻底禁掉远程控制，再到「设置」里取消「允许控制台点击接管」。
 
 ---
 
@@ -383,7 +405,9 @@ pending ──start──▶ running ──┬──▶ success   （已回到�
 | `SKYMAIL_BASE_URL` / `SKYMAIL_EMAIL` / `SKYMAIL_PASSWORD` | — | 收码账号 |
 | `MUSE_HEADLESS` | `true` | 无头模式 |
 | `MUSE_CONCURRENCY` | `1` | 并行任务数（每个任务一个独立 BrowserContext） |
-| `MUSE_BIRTHDAY` | `1996-07-22` | 默认生日 |
+| `MUSE_BIRTHDAY_YEAR_MIN` / `MUSE_BIRTHDAY_YEAR_MAX` | `1995` / `2002` | 生日随机年份范围（不手填） |
+| `MUSE_EMAIL_DOMAIN` | 空 | 自动建邮箱用哪个域名；空则取 skymail 已有邮箱的域名 |
+| `MUSE_LIVE_VIEW` | `true` | 是否推送实时画面 |
 | `MUSE_CODE_TIMEOUT` | `240` | 等验证码超时（秒） |
 | `MUSE_STEP_TIMEOUT` | `60` | 单步超时（秒） |
 | `MUSE_SCREENSHOT_INTERVAL` | `1.5` | 实时画面帧间隔（秒） |
@@ -423,7 +447,8 @@ muse.ai 改版时**不需要改代码**：在 `data/selectors.json` 里覆盖即
 | 现象 | 排查 |
 |---|---|
 | 控制台一直「未连接」 | 反代没转发 WebSocket（缺 `Upgrade`/`Connection` 头）；或 Basic 密码错 |
-| 任务卡在「等待验证码」 | 设置页「测试连接」；确认目标邮箱在 skymail 可见邮箱列表里；看任务日志里 skymail 的报错 |
+| 任务卡在「创建收件邮箱」 | skymail 没配好，或它开了「添加邮箱人机验证」。设置页点「测试连接」看报错 |
+| 任务卡在「等待验证码」 | 设置页「测试连接」；看任务日志里 skymail 的报错；确认 muse 的邮件确实进了这个邮箱 |
 | `我们无法创建你的账户，请重试。` | SOP 里记录过的服务端偶发失败 → 点「重试」 |
 | 找不到按钮 / 输入框 | 跑 `python tools/probe_muse.py` 看当前页面结构，按第 7 节覆盖选择器 |
 | 生日下拉选不中 | 确认 `data/selectors.json` 里 `option` 仍为 `[role="option"]`；页面可能换成了原生 `<select>` |

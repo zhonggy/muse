@@ -43,8 +43,11 @@ DEFAULT_SETTINGS: dict = {
     "code_poll_interval": _float("MUSE_CODE_POLL_INTERVAL", 3.0),
 
     # --- 注册资料 ---
-    "birthday": os.getenv("MUSE_BIRTHDAY", "1996-07-22"),    # YYYY-MM-DD
-    "default_card_id": "",                                    # 默认使用的卡
+    # 生日不再由用户填写，每个任务在 [min, max] 年内随机生成
+    "birthday_year_min": _int("MUSE_BIRTHDAY_YEAR_MIN", 1995),
+    "birthday_year_max": _int("MUSE_BIRTHDAY_YEAR_MAX", 2002),
+    "email_domain": os.getenv("MUSE_EMAIL_DOMAIN", ""),   # 留空则自动取 skymail 已有域名
+    "default_card_id": "",                                # 默认使用的卡
 
     # --- 浏览器 ---
     "headless": _bool("MUSE_HEADLESS", True),
@@ -65,6 +68,7 @@ DEFAULT_SETTINGS: dict = {
     "stop_at_verification": _bool("MUSE_STOP_AT_VERIFICATION", False),
     "auto_fill_card": _bool("MUSE_AUTO_FILL_CARD", True),
     "manual_takeover": _bool("MUSE_MANUAL_TAKEOVER", True),  # 允许控制台点击接管
+    "live_view": _bool("MUSE_LIVE_VIEW", True),             # 是否推送实时画面
 }
 
 #: 控制台鉴权（留空则不需要登录）

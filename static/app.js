@@ -182,7 +182,7 @@
         `<button class="mini danger" data-act="del" data-id="${t.id}">删除</button>`,
       ].join('');
       return `<div class="task-item ${t.id === state.selected ? 'sel' : ''}" data-id="${t.id}">
-        <div class="task-top">${badge}${needs}<span class="task-email">${esc(t.email)}</span></div>
+        <div class="task-top">${badge}${needs}<span class="task-email">${esc(t.email || '待生成邮箱')}</span></div>
         <div class="task-sub"><span class="grow">${esc(sub)}</span></div>
         <div class="task-acts">${acts}</div>
       </div>`;
@@ -233,7 +233,7 @@
   function renderDetail() {
     const t = state.tasks.find((x) => x.id === state.selected);
     if (!t) return;
-    $('detailTitle').textContent = t.email;
+    $('detailTitle').textContent = t.email || '新任务';
     const acts = [];
     if (t.needs === 'card') acts.push('<button class="primary mini" data-d="card">提供卡信息</button>');
     if (t.needs === 'manual') acts.push('<button class="primary mini" data-d="manual">我已完成人工操作</button>');
@@ -275,9 +275,23 @@
   }
 
   function showShot(msg) {
+    if (state.settings.live_view === false) return;
     const img = $('live');
     img.src = 'data:image/jpeg;base64,' + msg.data;
     $('viewer').classList.add('live');
+  }
+
+  function renderViewerState() {
+    const on = state.settings.live_view !== false;
+    const viewer = $('viewer');
+    const hint = $('viewerHint');
+    viewer.classList.toggle('live-off', !on);
+    if (!on) {
+      viewer.classList.remove('live');
+      hint.innerHTML = '实时画面已关闭<br><span class="muted">勾选「新建任务」里的「启用实时画面」后重跑任务即可</span>';
+    } else {
+      hint.innerHTML = '选择左侧任务，查看浏览器实时画面<br><span class="muted">可直接点击画面进行人工接管</span>';
+    }
   }
 
   // ------------------------------------------------------------------
@@ -289,6 +303,7 @@
     const img = $('live');
 
     viewer.addEventListener('click', (e) => {
+      if (state.settings.live_view === false) return;
       if (!state.selected || !img.naturalWidth) return;
       const rect = img.getBoundingClientRect();
       if (e.clientX < rect.left || e.clientX > rect.right) return;
@@ -398,21 +413,52 @@
   }
 
   function setupCards() {
+    // 有效期输入时自动补斜杠：0729 → 07/29
+    $('c_exp').addEventListener('input', (e) => {
+      const d = e.target.value.replace(/\D/g, '').slice(0, 4);
+      e.target.value = d.length > 2 ? `${d.slice(0, 2)}/${d.slice(2)}` : d;
+    });
+    // 卡号输入时每 4 位加空格
+    $('c_number').addEventListener('input', (e) => {
+      const d = e.target.value.replace(/\D/g, '').slice(0, 19);
+      e.target.value = d.replace(/(.{4})/g, '$1 ').trim();
+    });
+
     $('btnAddCard').addEventListener('click', guard(async () => {
-      const payload = {
-        label: $('c_label').value.trim(),
-        number: $('c_number').value.trim(),
-        exp_month: $('c_month').value.trim(),
-        exp_year: $('c_year').value.trim(),
-        cvc: $('c_cvc').value.trim(),
-        holder: $('c_holder').value.trim(),
-        postal: $('c_postal').value.trim(),
-        country: $('c_country').value.trim(),
-      };
-      await api('POST', '/api/cards', payload);
-      ['c_label', 'c_number', 'c_cvc', 'c_holder'].forEach((id) => { $(id).value = ''; });
+      const number = $('c_number').value.replace(/\D/g, '');
+      const exp = parseExpiry($('c_exp').value);
+      const cvc = $('c_cvc').value.replace(/\D/g, '');
+      if (number.length < 12) return toast('卡号无效', 'err');
+      if (!exp) return toast('有效期格式应为 MM/YY', 'err');
+      if (!cvc) return toast('请填写 CVV', 'err');
+      await api('POST', '/api/cards', {
+        number,
+        exp_month: exp.month,
+        exp_year: exp.year,
+        cvc,
+      });
+      $('c_number').value = '';
+      $('c_exp').value = '';
+      $('c_cvc').value = '';
       toast('卡片已加密保存', 'ok');
     }));
+  }
+
+  // 支持 MM/YY、MM/YYYY、MMYY、M/YY
+  function parseExpiry(raw) {
+    const s = String(raw || '').trim();
+    if (!s) return null;
+    const m = s.match(/^(\d{1,2})\s*[\/\-.]\s*(\d{2,4})$/);
+    if (m) {
+      const mm = m[1].padStart(2, '0');
+      if (+mm < 1 || +mm > 12) return null;
+      return { month: mm, year: m[2].length === 2 ? '20' + m[2] : m[2] };
+    }
+    const d = s.replace(/\D/g, '');
+    if (d.length === 3) return { month: '0' + d[0], year: '20' + d.slice(1) };
+    if (d.length === 4) return { month: d.slice(0, 2), year: '20' + d.slice(2) };
+    if (d.length === 6) return { month: d.slice(0, 2), year: d.slice(2) };
+    return null;
   }
 
   // ------------------------------------------------------------------
@@ -426,7 +472,6 @@
     s_code_timeout: 'code_timeout',
     s_code_poll_interval: 'code_poll_interval',
     s_muse_url: 'muse_url',
-    s_birthday: 'birthday',
     s_default_card_id: 'default_card_id',
     s_concurrency: 'concurrency',
     s_screenshot_interval: 'screenshot_interval',
@@ -458,7 +503,11 @@
       const el = $(id);
       if (el) el.checked = !!s[key];
     }
-    if (!$('birthday').value) $('birthday').value = s.birthday || '1996-07-22';
+    const cEl = $('concurrency');
+    if (cEl) cEl.value = s.concurrency || 1;
+    const lvEl = $('liveView');
+    if (lvEl) lvEl.checked = s.live_view !== false;
+    renderViewerState();
     fillCardSelect();
   }
 
@@ -489,10 +538,13 @@
         skymail_base_url: $('s_base').value.trim(),
         skymail_email: $('s_email').value.trim(),
         skymail_password: $('s_password').value,
+        create: $('skymailCreate').checked,
       });
-      $('skymailResult').textContent =
-        `✓ ${r.user}，可见邮箱 ${r.accounts.length} 个：`
-        + r.accounts.slice(0, 6).map((a) => a.email).join(', ');
+      const parts = [`✓ ${r.user}`];
+      parts.push(`可用域名 ${(r.domains || []).join(', ') || '无'}`);
+      parts.push(`可见邮箱 ${r.accounts.length} 个`);
+      if (r.created) parts.push(`试建成功：${r.created.email}`);
+      $('skymailResult').textContent = parts.join(' | ');
     }));
 
     $('btnCreate').addEventListener('click', guard(createTasks));
@@ -511,16 +563,18 @@
   }
 
   async function createTasks() {
-    const emails = $('emails').value;
-    if (!emails.trim()) return toast('请填写邮箱', 'err');
+    const count = Math.max(1, Math.min(500, Number($('count').value) || 1));
+    const concurrency = Math.max(1, Math.min(8, Number($('concurrency').value) || 1));
+    $('count').value = count;
+    $('concurrency').value = concurrency;
     const r = await api('POST', '/api/tasks', {
-      emails,
-      birthday: $('birthday').value || state.settings.birthday,
+      count,
+      concurrency,
       card_id: $('taskCard').value,
+      live_view: $('liveView').checked,
       autostart: $('autostart').checked,
     });
-    toast(`已创建 ${r.created} 个任务`, 'ok');
-    $('emails').value = '';
+    toast(`已创建 ${r.created} 个任务，并发 ${r.concurrency}`, 'ok');
     if (r.tasks && r.tasks.length) selectTask(r.tasks[0].id);
   }
 
@@ -532,18 +586,19 @@
     const opts = state.cards.map((c) =>
       `<option value="${c.id}">${esc(c.label)} ${esc(c.pan_masked)}</option>`).join('');
     $('modalTitle').textContent = '提供支付卡信息';
-    $('modalDesc').textContent = `任务 ${task.email} 正停在年龄验证页，需要一张卡继续。`;
+    $('modalDesc').textContent =
+      `任务 ${task.email || ''} 正停在年龄验证页，需要一张卡继续。`;
     $('modalBody').innerHTML = `
       <label class="fld"><span>使用已保存的卡片</span>
         <select id="m_card"><option value="">— 手动填写 —</option>${opts}</select></label>
       <div id="m_manual">
-        <div class="grid3">
-          <label class="fld"><span>卡号</span><input id="m_number" inputmode="numeric"></label>
-          <label class="fld"><span>月</span><input id="m_month" placeholder="07"></label>
-          <label class="fld"><span>年</span><input id="m_year" placeholder="2029"></label>
-          <label class="fld"><span>CVV</span><input id="m_cvc" inputmode="numeric"></label>
-          <label class="fld"><span>持卡人</span><input id="m_holder"></label>
-          <label class="fld"><span>邮编</span><input id="m_postal"></label>
+        <div class="row">
+          <label class="fld" style="flex:2 1 200px"><span>卡号</span>
+            <input id="m_number" inputmode="numeric" placeholder="4242424242424242"></label>
+          <label class="fld"><span>有效期</span>
+            <input id="m_exp" placeholder="MM/YY" maxlength="7"></label>
+          <label class="fld"><span>CVV</span>
+            <input id="m_cvc" inputmode="numeric" placeholder="123" maxlength="4"></label>
         </div>
         <label class="chk"><input type="checkbox" id="m_save" checked> 同时保存到卡片库</label>
       </div>`;
@@ -555,20 +610,31 @@
     $('m_card').addEventListener('change', sync);
     sync();
 
+    $('m_exp').addEventListener('input', (e) => {
+      const d = e.target.value.replace(/\D/g, '').slice(0, 4);
+      e.target.value = d.length > 2 ? `${d.slice(0, 2)}/${d.slice(2)}` : d;
+    });
+
     $('modalCancel').onclick = () => { $('modal').classList.add('hidden'); };
     $('modalOk').onclick = guard(async () => {
       const cardId = $('m_card').value;
-      const payload = cardId ? { card_id: cardId } : {
-        number: $('m_number').value.trim(),
-        exp_month: $('m_month').value.trim(),
-        exp_year: $('m_year').value.trim(),
-        cvc: $('m_cvc').value.trim(),
-        holder: $('m_holder').value.trim(),
-        postal: $('m_postal').value.trim(),
-        save_as_card: $('m_save').checked,
-        label: `手动录入 ${new Date().toLocaleDateString()}`,
-      };
-      await api('POST', `/api/tasks/${task.id}/card`, payload);
+      if (cardId) {
+        await api('POST', `/api/tasks/${task.id}/card`, { card_id: cardId });
+      } else {
+        const number = $('m_number').value.replace(/\D/g, '');
+        const exp = parseExpiry($('m_exp').value);
+        const cvc = $('m_cvc').value.replace(/\D/g, '');
+        if (number.length < 12) return toast('卡号无效', 'err');
+        if (!exp) return toast('有效期格式应为 MM/YY', 'err');
+        if (!cvc) return toast('请填写 CVV', 'err');
+        await api('POST', `/api/tasks/${task.id}/card`, {
+          number,
+          exp_month: exp.month,
+          exp_year: exp.year,
+          cvc,
+          save_as_card: $('m_save').checked,
+        });
+      }
       $('modal').classList.add('hidden');
       toast('卡信息已提交，任务继续', 'ok');
     });
@@ -626,6 +692,14 @@
     setupViewer();
     setupCards();
     setupSettings();
+
+    // 实时画面开关随手切换就生效（不用等下次建任务）
+    $('liveView').addEventListener('change', guard(async (e) => {
+      const s = await api('PUT', '/api/settings', { live_view: e.target.checked });
+      state.settings = s;
+      renderViewerState();
+      toast(e.target.checked ? '实时画面已开启' : '实时画面已关闭', 'ok');
+    }));
 
     try {
       const t = await api('GET', '/api/ws-token');

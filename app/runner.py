@@ -105,6 +105,9 @@ class TaskRuntime:
         target = page or self.active_page
         if target is None:
             return
+        live = bool(self.settings.get("live_view", True))
+        if not label and not live:
+            return  # 关掉实时画面时，无标签的定时截图直接跳过
         try:
             data = await target.screenshot(
                 type="jpeg",
@@ -122,21 +125,24 @@ class TaskRuntime:
                 self.store.touch()
             except OSError:
                 pass
-        self.bus.publish({
-            "type": "shot",
-            "task_id": self.id,
-            "label": label,
-            "data": base64.b64encode(data).decode(),
-            "w": int(self.settings.get("viewport_w", 1280)),
-            "h": int(self.settings.get("viewport_h", 820)),
-            "ts": time.time(),
-        })
+        if live:
+            self.bus.publish({
+                "type": "shot",
+                "task_id": self.id,
+                "label": label,
+                "data": base64.b64encode(data).decode(),
+                "w": int(self.settings.get("viewport_w", 1280)),
+                "h": int(self.settings.get("viewport_h", 820)),
+                "ts": time.time(),
+            })
 
     async def _shot_loop(self) -> None:
         interval = float(self.settings.get("screenshot_interval", 1.5))
         while not self._stop.is_set():
             try:
                 await asyncio.sleep(interval)
+                if not self.settings.get("live_view", True):
+                    continue
                 if self.bus.subscriber_count:
                     await self.snap()
             except asyncio.CancelledError:
@@ -201,12 +207,47 @@ class TaskRuntime:
         self._resume.set()
 
     # ------------------------------------------------------------------
+    # 邮箱（通过 skymail API 自动创建）
+    # ------------------------------------------------------------------
+
+    async def prepare_email(self) -> str:
+        """任务启动时自动生成并注册一个新邮箱，返回邮箱地址。"""
+        email = self.task.get("email")
+        if email:
+            return str(email)
+        await self.set_step("创建收件邮箱")
+        info = await self.runner.skymail.create_random_email(
+            domain=(self.settings.get("email_domain") or "").strip() or None
+        )
+        await self.patch(
+            email=info["email"],
+            skymail_account_id=info.get("accountId"),
+        )
+        await self.log(f"已通过 skymail API 创建邮箱：{info['email']}")
+        return str(info["email"])
+
+    # ------------------------------------------------------------------
     # 验证码
     # ------------------------------------------------------------------
 
     async def capture_mail_baseline(self) -> None:
         client: SkymailClient = self.runner.skymail
         email = self.task["email"]
+
+        # 邮箱是我们刚通过 API 创建的，accountId 已知，直接用
+        known = self.task.get("skymail_account_id")
+        if known:
+            self._mail_source = ("account", int(known))
+            try:
+                mails = await client.poll_once(int(known), size=5)
+                self._seen_mail_ids = {int(m.get("emailId") or 0) for m in mails}
+                await self.log(
+                    f"收件箱就绪：accountId={known}，基线邮件 {len(self._seen_mail_ids)} 封"
+                )
+                return
+            except SkymailError as exc:
+                await self.log(f"按已知 accountId 读信失败：{exc}，回退查找", "warn")
+
         try:
             acc = await client.ensure_account(email)
             account_id = acc.get("accountId")
@@ -553,8 +594,10 @@ class TaskRunner:
             await rt.publish_task()
 
             try:
+                await rt.log(f"开始处理（第 {task['attempts']} 次）")
+                await rt.prepare_email()
+                await rt.log(f"目标邮箱：{task['email']}")
                 await rt.open_browser()
-                await rt.log(f"开始处理 {task['email']}（第 {task['attempts']} 次）")
                 flow = MuseFlow(rt)
                 await asyncio.wait_for(
                     flow.run(),

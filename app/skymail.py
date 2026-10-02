@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import html as html_mod
+import random
 import re
+import string
 import time
 from typing import Any
 
@@ -32,6 +34,15 @@ NOISE = {"197001", "000000", "123456"}
 
 class SkymailError(RuntimeError):
     pass
+
+
+def _random_local_part() -> str:
+    """生成看起来正常的邮箱前缀，如 kx7f2m9q。"""
+    letters = string.ascii_lowercase
+    head = "".join(random.choices(letters, k=3))
+    mid = "".join(random.choices(string.digits, k=4))
+    tail = "".join(random.choices(letters, k=2))
+    return f"{head}{mid}{tail}"
 
 
 def strip_html(raw: str) -> str:
@@ -194,6 +205,63 @@ class SkymailClient:
         await self.login()
         self._accounts = None
         return await self._request("POST", "/api/account/add", json={"email": email})
+
+    # ---------------- 自动生成邮箱 ----------------
+
+    async def list_domains(self, size: int = 50) -> list[str]:
+        """从已有邮箱里推断可用域名（skymail 没有专门的域名列表接口）。"""
+        accounts = self._accounts if self._accounts is not None else await self.list_accounts(size)
+        domains: list[str] = []
+        for acc in accounts:
+            email = str(acc.get("email") or "").strip().lower()
+            if "@" in email:
+                dom = email.rsplit("@", 1)[1]
+                if dom and dom not in domains:
+                    domains.append(dom)
+        return domains
+
+    async def create_random_email(
+        self,
+        domain: str | None = None,
+        attempts: int = 12,
+    ) -> dict:
+        """随机生成一个邮箱地址并通过 POST /api/account/add 创建。
+
+        返回 {"email": ..., "accountId": ...}
+        """
+        await self.login()
+        domains = await self.list_domains()
+        if not domains:
+            raise SkymailError(
+                "无法推断可用邮箱域名：skymail 账号下没有任何已有邮箱。"
+                "请先在 skymail 后台添加一个邮箱，或在控制台手动指定域名。"
+            )
+        dom = (domain or random.choice(domains)).strip().lower()
+
+        last_err: Exception | None = None
+        for _ in range(attempts):
+            email = f"{_random_local_part()}@{dom}"
+            try:
+                acc = await self.add_account(email)
+            except SkymailError as exc:
+                msg = str(exc)
+                last_err = exc
+                if "人机验证" in msg or "验证" in msg and "token" in msg.lower():
+                    raise SkymailError(
+                        f"skymail 开启了「添加邮箱」人机验证，无法自动建邮箱：{msg}"
+                    ) from exc
+                # 多半是重名，换一个前缀重试
+                continue
+            if acc is not None and acc.get("addVerifyOpen"):
+                raise SkymailError(
+                    "skymail 开启了「添加邮箱」人机验证，无法自动建邮箱"
+                )
+            self._accounts = None
+            return {
+                "email": email,
+                "accountId": (acc or {}).get("accountId"),
+            }
+        raise SkymailError(f"连续 {attempts} 次都无法创建邮箱：{last_err}")
 
     async def ensure_account(self, email: str) -> dict:
         """确保目标邮箱存在于 skymail 账号下，返回 account 记录。"""

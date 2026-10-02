@@ -27,16 +27,19 @@
     <aside class="col-left">
       <div class="card">
         <h3>新建任务</h3>
-        <label class="fld">
-          <span>邮箱列表（每行一个，也支持逗号 / 空格分隔）</span>
-          <textarea id="emails" rows="5" placeholder="user1@example.com&#10;user2@example.com"></textarea>
-        </label>
+        <p class="muted small">收件邮箱由 skymail API 自动创建，无需填写。</p>
         <div class="row">
-          <label class="fld"><span>生日</span><input type="date" id="birthday"></label>
-          <label class="fld"><span>支付卡</span><select id="taskCard"></select></label>
+          <label class="fld"><span>并发数</span>
+            <input type="number" id="concurrency" min="1" max="8" value="1"></label>
+          <label class="fld"><span>跑多少次</span>
+            <input type="number" id="count" min="1" max="500" value="1"></label>
         </div>
-        <label class="chk"><input type="checkbox" id="autostart" checked> 创建后立即开始</label>
-        <button class="primary block" id="btnCreate">创建任务</button>
+        <label class="fld"><span>支付卡</span><select id="taskCard"></select></label>
+        <div class="checks">
+          <label class="chk"><input type="checkbox" id="liveView" checked> 启用实时画面</label>
+          <label class="chk"><input type="checkbox" id="autostart" checked> 创建后立即开始</label>
+        </div>
+        <button class="primary block" id="btnCreate">开始运行</button>
         <div class="row wrap">
           <button id="btnStartAll">全部开始</button>
           <button id="btnStopAll">全部停止</button>
@@ -88,15 +91,13 @@
     <div class="card">
       <h3>新增支付卡</h3>
       <p class="muted small">卡号与 CVV 使用 Fernet 加密后落盘（data/secret.key 或 MUSE_SECRET_KEY），接口只返回脱敏卡号。</p>
-      <div class="grid4">
-        <label class="fld"><span>备注名</span><input id="c_label" placeholder="主力卡"></label>
-        <label class="fld"><span>卡号</span><input id="c_number" inputmode="numeric" placeholder="4242424242424242"></label>
-        <label class="fld"><span>有效期月</span><input id="c_month" placeholder="07"></label>
-        <label class="fld"><span>有效期年</span><input id="c_year" placeholder="2029"></label>
-        <label class="fld"><span>CVV</span><input id="c_cvc" inputmode="numeric" placeholder="123"></label>
-        <label class="fld"><span>持卡人</span><input id="c_holder" placeholder="ZHANG SAN"></label>
-        <label class="fld"><span>邮编</span><input id="c_postal" placeholder="100000"></label>
-        <label class="fld"><span>国家代码</span><input id="c_country" placeholder="US"></label>
+      <div class="row">
+        <label class="fld" style="flex:2 1 260px"><span>卡号</span>
+          <input id="c_number" inputmode="numeric" placeholder="4242424242424242"></label>
+        <label class="fld"><span>有效期</span>
+          <input id="c_exp" placeholder="MM/YY" maxlength="7"></label>
+        <label class="fld"><span>CVV</span>
+          <input id="c_cvc" inputmode="numeric" placeholder="123" maxlength="4"></label>
       </div>
       <button class="primary" id="btnAddCard">保存卡片</button>
     </div>
@@ -117,6 +118,7 @@
         <label class="fld"><span>验证码超时（秒）</span><input id="s_code_timeout" type="number"></label>
         <label class="fld"><span>轮询间隔（秒）</span><input id="s_code_poll_interval" type="number" step="0.5"></label>
       </div>
+      <label class="chk"><input type="checkbox" id="skymailCreate"> 顺便试建一个邮箱（验证自动建邮箱能力）</label>
       <button id="btnTestSkymail">测试连接</button>
       <span id="skymailResult" class="muted small"></span>
     </div>
@@ -125,7 +127,6 @@
       <h3>浏览器与任务</h3>
       <div class="grid3">
         <label class="fld"><span>muse 地址</span><input id="s_muse_url"></label>
-        <label class="fld"><span>默认生日</span><input id="s_birthday" placeholder="1996-07-22"></label>
         <label class="fld"><span>默认卡片</span><select id="s_default_card_id"></select></label>
         <label class="fld"><span>并发数</span><input id="s_concurrency" type="number" min="1" max="8"></label>
         <label class="fld"><span>截图间隔（秒）</span><input id="s_screenshot_interval" type="number" step="0.5"></label>

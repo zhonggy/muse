@@ -238,6 +238,11 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 }
 .viewer.live .viewer-hint { display: none; }
 
+/* 实时画面被关掉时：置灰、禁止点击接管 */
+.viewer.live-off { cursor: default; }
+.viewer.live-off img { opacity: .18; }
+.viewer.live-off .viewer-hint { display: flex; }
+
 .typebar { display: flex; gap: 6px; margin-top: 10px; }
 .typebar input { flex: 1 1 auto; }
 .typebar button { flex: 0 0 auto; }
