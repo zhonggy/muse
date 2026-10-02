@@ -1,4 +1,9 @@
-FROM python:3.12-slim
+# 必须钉死 Debian 发行版代号：
+# `python:3.12-slim` 是滚动 tag，已经指向 Debian 13 (trixie)，
+# 而 Playwright 1.49.1 不认识 trixie，会回退到 ubuntu20.04 的依赖列表，
+# 导致 `ttf-unifont` / `ttf-ubuntu-font-family` 装不上、构建失败。
+# 换 Playwright 版本时才能动这里。
+FROM python:3.12-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
