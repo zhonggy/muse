@@ -45,7 +45,15 @@ DETECT_JS = r"""
   add('navigator.languages', JSON.stringify(navigator.languages), '非空');
   add('navigator.platform', navigator.platform, '非空');
   add('navigator.hardwareConcurrency', navigator.hardwareConcurrency, '>=2');
-  add('navigator.maxTouchPoints', navigator.maxTouchPoints, '0');
+
+  // 触屏声明要看「自洽」而不是只看数值。
+  // real headless 的经典特征是：maxTouchPoints > 0 却没有任何触屏媒体查询。
+  // Camoufox 声称有触屏时会同时补上 (any-pointer: coarse)，这是自洽的。
+  const mtp = navigator.maxTouchPoints;
+  const coarse = matchMedia('(any-pointer: coarse)').matches;
+  add('maxTouchPoints 数值', mtp, '>=0');
+  add('maxTouchPoints 与触屏声明自洽',
+      (mtp === 0) === (!coarse) ? 'yes' : 'NO', 'yes');
   add('screen.width', screen.width, '>0');
   add('screen.colorDepth', screen.colorDepth, '24');
   add('document.hasFocus()', String(document.hasFocus()), 'true');
@@ -100,6 +108,8 @@ def _verdict(value: str, expect: str) -> str:
     if expect.startswith("非软件"):
         return "" if not __import__("re").search(
             r"swiftshader|llvmpipe|software|mesa", v, __import__("re").I) else " ✗"
+    if expect == ">=0":
+        return "" if v.isdigit() else " ✗"
     if expect.startswith("yes 或"):
         return "" if v.startswith("yes") else " ✗"
     if "|" in expect:
