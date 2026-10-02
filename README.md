@@ -27,7 +27,8 @@
 | 7 | 生日（新邮箱） | 在 1995–2002 年内**随机**，3 个 Radix Select 用完整 `pointerdown→mousedown→pointerup→mouseup→click` 序列 |
 | 8 | 提交生日 | 容忍页面上下文短暂销毁，最多等 90s |
 | 9 | 点「开始」 | 该页有两个 submit，**按文案精确匹配**，不误点「设置」 |
-| 10 | 年龄验证 | 点「验证年龄」→ 结账页 → 自动填卡 → 提交 → 回到主页 |
+| 10 | 年龄验证 | 点「验证年龄」→ 结账页 → 自动填卡（卡号/有效期/CVV/**邮编**）→ 提交 → 结账页关闭、回到主页 |
+| 11 | 兑现邀请码 | 主页左下角设置按钮 → 弹出菜单第 4 项（设置）→「兑现邀请码」→ 输入邀请码 → 确定 |
 
 结束后把登录态写进 `data/sessions/<task_id>.json`（Playwright `storage_state`），可下载复用。
 
@@ -641,6 +642,8 @@ pending ──start──▶ running ──┬──▶ success   （已回到�
 | `MUSE_STEALTH` | `true` | 反检测：抹掉自动化特征 |
 | `MUSE_CONCURRENCY` | `1` | 并行任务数（每个任务一个独立 BrowserContext） |
 | `MUSE_BIRTHDAY_YEAR_MIN` / `MUSE_BIRTHDAY_YEAR_MAX` | `1995` / `2002` | 生日随机年份范围（不手填） |
+| `MUSE_CHECKOUT_POSTAL` | `97538` | 结账页邮编 |
+| `MUSE_INVITE_CODE` | 空 | 验证通过后兑现的邀请码；留空跳过这一步 |
 | `MUSE_EMAIL_DOMAIN` | 空 | 自动建邮箱用哪个域名；空则取 skymail 已有邮箱的域名 |
 | `MUSE_LIVE_VIEW` | `true` | 是否推送实时画面 |
 | `MUSE_CODE_TIMEOUT` | `240` | 等验证码超时（秒） |
@@ -693,6 +696,8 @@ muse.ai 改版时**不需要改代码**：在 `data/selectors.json` 里覆盖即
 | 结账页没弹出来 | 代码会自动点兜底按钮「打开安全结账」；若仍失败，日志里会提示，用实时画面手动打开 |
 | Chromium 起不来 / 崩溃 | `docker-compose.yml` 里 `shm_size: 1gb`；确认容器有 `--no-sandbox`（已内置） |
 | 卡片解密失败 | `MUSE_SECRET_KEY` 与写入时不一致；要么恢复原密钥，要么删掉旧卡重新录入 |
+| 兑现邀请码没走完 | 任务仍算成功（账号已建好）。日志里有各步的区域可点元素列表，按它调 `data/selectors.json` 的 `settings_entry` / `settings_menu` / `redeem_invite` |
+| 结账页没填邮编 | 确认「设置 → 结账页邮编」有值；有些结账页要填完 CVV 才展开邮编字段，代码会在填完 CVV 后重探一次 |
 | 中文截图乱码 | Dockerfile 已装 `fonts-noto-cjk`；裸机部署需自行安装中文字体 |
 | 顶栏 Resin 标记是红色 | 没配 `resin_url` 或 `resin_enabled=false`。设置页填好后点保存 |
 | Resin 测试报「粘性异常」 | 同一个 Account 两次拿到不同 IP。检查 `resin_url` 里的 Token 是否正确、Platform 是否写错 |
@@ -730,6 +735,7 @@ muse.ai 改版时**不需要改代码**：在 `data/selectors.json` 里覆盖即
 ├── tools/
 │   ├── probe_muse.py    真实站点选择器探针
 │   ├── probe_stealth.py 反检测自测（内核感知，两种内核分别比对）
+│   ├── test_redeem_flow.py 兑现邀请码的位置定位自测（合成页面）
 │   └── test_resin.py    Resin 接入自测（起假 Resin 服务跑断言）
 ├── scripts/             dev.sh / deploy.sh
 ├── data/                运行时数据（store.json、secret.key、sessions/、shots/）
