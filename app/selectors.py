@@ -27,6 +27,15 @@ SELECTORS: dict[str, list[str]] = {
     "submit": ['button[type="submit"]'],
     "combobox": ['button[role="combobox"]'],
     "option": ['[role="option"]'],
+    # 兑现邀请码的输入框
+    "invite_input": [
+        'input[placeholder*="邀请码"]',
+        'input[placeholder*="邀请"]',
+        'input[name*="invite" i]',
+        'input[id*="invite" i]',
+        'input[placeholder*="invite" i]',
+        'input[placeholder*="redeem" i]',
+    ],
     # 姓名输入框：优先用 JS 探针打的标记，下面这些是 CSS 兜底
     "first_name": [
         '[data-muse-name="first"]',
@@ -102,6 +111,17 @@ TEXTS: dict[str, list[str]] = {
     ],
     # 年龄验证页「已通过 / 回到主页」的判定文案
     "verified_ok": ["开始使用", "开始", "进入", "继续使用"],
+
+    # --- 收尾：兑现邀请码 ---
+    # 左下角的设置入口
+    "settings_entry": ["设置", "Settings", "偏好设置", "首选项"],
+    # 弹出菜单里的「设置」（实测是第 4 项）
+    "settings_menu": ["设置", "Settings", "偏好设置", "首选项"],
+    # 中间弹窗里的「兑现邀请码」
+    "redeem_invite": [
+        "兑现邀请码", "兑换邀请码", "使用邀请码", "邀请码",
+        "Redeem invite", "Redeem code", "Invite code", "Redeem",
+    ],
 }
 
 #: 关键页面 URL 片段

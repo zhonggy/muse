@@ -49,6 +49,12 @@ DEFAULT_SETTINGS: dict = {
     "email_domain": os.getenv("MUSE_EMAIL_DOMAIN", ""),   # 留空则自动取 skymail 已有域名
     "default_card_id": "",                                # 默认使用的卡
 
+    # --- 收尾 ---
+    # 验证通过后要兑现的邀请码；留空则跳过这一步
+    "invite_code": os.getenv("MUSE_INVITE_CODE", ""),
+    # 结账页的邮编（卡里没填就用这个）
+    "checkout_postal": os.getenv("MUSE_CHECKOUT_POSTAL", "97538"),
+
     # --- Resin 代理池 ---
     # resin_url 含代理基础地址与 Token，形如 http://127.0.0.1:2260/my-token
     "resin_url": os.getenv("RESIN_URL", ""),

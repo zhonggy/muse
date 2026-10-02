@@ -369,6 +369,7 @@ async def api_create_tasks(payload: dict = Body(...), _: None = Depends(auth)) -
             "birthday": random_birthday(settings),
             "first_name": first,               # 注册补全页出现「名/姓」时用
             "last_name": last,
+            "invite_code": str(settings.get("invite_code") or ""),
             "card_id": cid,
             "code": "",
             "logs": [],

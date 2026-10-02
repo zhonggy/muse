@@ -586,6 +586,8 @@
     s_browser_engine: 'browser_engine',
     s_camoufox_os: 'camoufox_os',
     s_default_card_id: 'default_card_id',
+    s_invite_code: 'invite_code',
+    s_checkout_postal: 'checkout_postal',
     s_concurrency: 'concurrency',
     s_screenshot_interval: 'screenshot_interval',
     s_step_timeout: 'step_timeout',

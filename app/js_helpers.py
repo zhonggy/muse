@@ -40,9 +40,16 @@ HELPERS_JS = r"""
 
   const text = (el) => ((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, ' ').trim();
 
+  // 完整 MouseEvent / PointerEvent 序列（Radix Select 只认这个）
+  //
+  // 注意：**不能传 view: window**。Camoufox 会给 window 套一层代理，
+  // 它不再是真正的 Window 实例，Firefox 会报
+  // “'view' member of UIEventInit does not implement interface Window”，
+  // 整个构造失败 —— 所有 JS 兜底点击（Radix 下拉、姓名框、区域点击）都会挂。
+  // view 本身是可选的，去掉不影响事件分发。
   const fire = (el, type, Ctor, x, y, buttons) => {
     el.dispatchEvent(new Ctor(type, {
-      bubbles: true, cancelable: true, composed: true, view: window,
+      bubbles: true, cancelable: true, composed: true,
       clientX: x, clientY: y, button: 0, buttons: buttons,
       pointerId: 1, pointerType: 'mouse', isPrimary: true,
     }));
@@ -139,10 +146,94 @@ HELPERS_JS = r"""
     options: deepAll('[role="option"]').length,
   });
 
+  // ------------------------------------------------------------------
+  // 按屏幕区域定位可点元素。
+  // muse 的 DOM 结构不稳定，左下角菜单、中间弹窗这类只能靠位置兜底。
+  // ------------------------------------------------------------------
+  const clickablesIn = (region) => {
+    const vw = innerWidth, vh = innerHeight;
+    const inRegion = (el) => {
+      const r = el.getBoundingClientRect();
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      if (region === 'bottom-left') return cx < vw * 0.45 && cy > vh * 0.35;
+      if (region === 'bottom-right') return cx > vw * 0.55 && cy > vh * 0.35;
+      if (region === 'center') {
+        return cx > vw * 0.2 && cx < vw * 0.8 && cy > vh * 0.1 && cy < vh * 0.9;
+      }
+      return true;
+    };
+    const els = deepAll(
+      'button, [role="button"], [role="menuitem"], [role="option"], a, li')
+      .filter(visible).filter(inRegion);
+    // 只留最内层，避免父子元素重复计数
+    return els.filter((e) => !els.some((o) => o !== e && e.contains(o)));
+  };
+
+  const clickNthInRegion = (n, region) => {
+    const els = clickablesIn(region);
+    const el = els[(n | 0) - 1];
+    return el ? realClick(el) : false;
+  };
+
+  // 把当前可点元素标记为「已存在」。
+  // 用途：点开菜单前先标记，然后只数新冒出来的元素 —— 否则入口按钮
+  // 本身也会被计入，导致「第 4 项」实际点到第 3 项。
+  const markSeen = (region) => {
+    clickablesIn(region).forEach((e) => {
+      try { e.setAttribute('data-muse-seen', '1'); } catch (err) {}
+    });
+    return true;
+  };
+
+  const clickNthNewInRegion = (n, region) => {
+    const els = clickablesIn(region).filter((e) => !e.hasAttribute('data-muse-seen'));
+    const el = els[(n | 0) - 1];
+    return el ? realClick(el) : false;
+  };
+
+  const listNewInRegion = (region) =>
+    clickablesIn(region).filter((e) => !e.hasAttribute('data-muse-seen'))
+      .map((e) => text(e).slice(0, 40));
+
+  const clickCorner = (region) => {
+    const els = clickablesIn(region);
+    if (!els.length) return false;
+    const vw = innerWidth, vh = innerHeight;
+    const tgt = region === 'bottom-left' ? [0, vh]
+              : region === 'bottom-right' ? [vw, vh] : [vw / 2, vh / 2];
+    let best = null, bestD = Infinity;
+    for (const el of els) {
+      const r = el.getBoundingClientRect();
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      const d = Math.hypot(cx - tgt[0], cy - tgt[1]);
+      if (d < bestD) { bestD = d; best = el; }
+    }
+    return best ? realClick(best) : false;
+  };
+
+  const listClickables = (region) =>
+    clickablesIn(region).map((e) => text(e).slice(0, 40));
+
+  // 填第一个可见的文本输入框（邀请码这种只有一个输入框的场景）
+  const fillFirstInput = (value) => {
+    const SKIP = new Set(['hidden', 'checkbox', 'radio', 'submit', 'button',
+                          'file', 'image', 'range', 'color']);
+    const el = deepAll('input, textarea').filter(visible).find((e) => {
+      const t = (e.getAttribute('type') || 'text').toLowerCase();
+      return !SKIP.has(t) && !e.disabled && !e.readOnly;
+    });
+    if (!el) return false;
+    el.focus();
+    setValue(el, value);
+    return el.value === value;
+  };
+
   window.__museHelpers = {
     deepAll, visible, text, realClick, setValue,
     findByText, clickByText, clickOption, clickSelector,
     comboboxLabels, describe,
+    clickablesIn, clickNthInRegion, clickCorner, listClickables, fillFirstInput,
+    markSeen, clickNthNewInRegion, listNewInRegion,
   };
 })();
 """

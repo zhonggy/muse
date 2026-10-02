@@ -406,6 +406,13 @@ class MuseFlow:
             await self.wait_stage(180_000, ["disclosure", "verification"])
         await self.step_disclosure()
         await self.step_age_verification()
+        # 兑现邀请码属于收尾：失败不影响账号本身，只记警告
+        try:
+            await self.step_redeem_invite()
+        except FlowStopped:
+            raise
+        except Exception as exc:
+            await self.log(f"兑现邀请码未完成：{exc}", "warn")
 
     # --- 1 ---
 
@@ -653,6 +660,178 @@ class MuseFlow:
         await self.wait_verification_done(target)
 
     # ------------------------------------------------------------------
+    # 收尾：兑现邀请码
+    # ------------------------------------------------------------------
+
+    async def wait_home(self, timeout_s: int = 120) -> None:
+        """等回到 muse 主界面（不再带 /access/）。"""
+        for _ in range(timeout_s // 2):
+            await self.check()
+            try:
+                info = await self.describe()
+            except Exception:
+                await asyncio.sleep(2)
+                continue
+            url = (info.get("url") or "").lower()
+            if "/access/" not in url and url.rstrip("/") not in ("", "about:blank"):
+                return
+            await asyncio.sleep(2)
+        await self.log("等待回到主界面超时，仍继续尝试兑现邀请码", "warn")
+
+    async def _list_region(self, region: str) -> list[str]:
+        try:
+            return await self.page.evaluate(
+                "(r) => window.__museHelpers.listClickables(r)", region
+            )
+        except Exception:
+            return []
+
+    async def _mark_region(self, region: str) -> None:
+        """把当前区域内的可点元素标为「已存在」。
+
+        弹菜单前先标一次，之后只数新冒出来的元素 —— 否则左下角那个入口
+        按钮本身也会被计入，导致「第 4 项」实际点到第 3 项。
+        """
+        try:
+            await self.page.evaluate(
+                "(r) => window.__museHelpers.markSeen(r)", region
+            )
+        except Exception:
+            pass
+
+    async def _click_region(
+        self,
+        region: str,
+        texts: list[str],
+        label: str,
+        nth: int = 0,
+        only_new: bool = False,
+    ) -> bool:
+        """先按文案点，再按「区域 + 序号」兜底。
+
+        muse 的 DOM 结构不稳定，左下角菜单、中间弹窗这些位置明确但文案不定，
+        所以两条路都留着。
+        """
+        for t in texts:
+            if await self._try_click(t, True):
+                await self.log(f"已点击「{t}」（{label}）")
+                return True
+
+        if nth:
+            if only_new:
+                names = await self._list_new(region)
+                expr = "([n, r]) => window.__museHelpers.clickNthNewInRegion(n, r)"
+            else:
+                names = await self._list_region(region)
+                expr = "([n, r]) => window.__museHelpers.clickNthInRegion(n, r)"
+            try:
+                ok = await self.page.evaluate(expr, [nth, region])
+            except Exception:
+                ok = False
+            if ok:
+                await self.log(
+                    f"{label}：按位置点第 {nth} 项"
+                    f"（{'新增' if only_new else '区域'}可点元素：{names}）"
+                )
+                return True
+
+        try:
+            ok = await self.page.evaluate(
+                "(r) => window.__museHelpers.clickCorner(r)", region
+            )
+        except Exception:
+            ok = False
+        if ok:
+            await self.log(f"{label}：按位置点该区域最靠角落的元素")
+            return True
+        return False
+
+    async def _list_new(self, region: str) -> list[str]:
+        try:
+            return await self.page.evaluate(
+                "(r) => window.__museHelpers.listNewInRegion(r)", region
+            )
+        except Exception:
+            return []
+
+    async def step_redeem_invite(self) -> None:
+        """验证通过、回到主页后兑现邀请码。
+
+        实测路径：
+          左下角设置按钮 → 弹出菜单第 4 项（设置）
+          → 中间弹窗点「兑现邀请码」→ 输入邀请码 → 确定 → 完成
+        """
+        code = str(
+            self.rt.task.get("invite_code")
+            or self.rt.settings.get("invite_code")
+            or ""
+        ).strip()
+        if not code:
+            await self.log("未配置邀请码，跳过兑现步骤", "warn")
+            return
+
+        await self.rt.set_step("兑现邀请码")
+        await self.wait_home()
+        await self.rt.snap("home")
+
+        # 1) 左下角设置入口（先标记已有元素，供第 2 步数「新增项」用）
+        await self._mark_region("bottom-left")
+        if not await self._click_region(
+            "bottom-left", TEXTS["settings_entry"], "左下角设置按钮"
+        ):
+            raise FlowError("找不到左下角设置按钮")
+        await self.page.wait_for_timeout(1500)
+        await self.rt.snap("menu-open")
+
+        # 2) 弹出菜单里的第 4 项 = 设置（只数点开后新出现的元素）
+        if not await self._click_region(
+            "bottom-left", TEXTS["settings_menu"], "弹出菜单里的「设置」",
+            nth=4, only_new=True,
+        ):
+            raise FlowError("找不到弹出菜单里的「设置」")
+        await self.page.wait_for_timeout(1800)
+        await self.rt.snap("settings-panel")
+
+        # 3) 中间弹窗里的「兑现邀请码」
+        if not await self._click_region(
+            "center", TEXTS["redeem_invite"], "「兑现邀请码」"
+        ):
+            await self.log(
+                f"找不到「兑现邀请码」，当前可见元素："
+                f"{await self._list_region('center')}",
+                "warn",
+            )
+            raise FlowError("找不到「兑现邀请码」")
+        await self.page.wait_for_timeout(1800)
+        await self.rt.snap("invite-input")
+
+        # 4) 输入邀请码
+        filled = False
+        try:
+            filled = bool(
+                await self.page.evaluate(
+                    "(v) => window.__museHelpers.fillFirstInput(v)", code
+                )
+            )
+        except Exception:
+            filled = False
+        if not filled:
+            el = await self.locate("invite_input", timeout_ms=8000)
+            if el is None:
+                raise FlowError("找不到邀请码输入框")
+            await self.click_locator(el, "邀请码输入框")
+            await el.press_sequentially(code, delay=50)
+        await self.log(f"邀请码已填入：{code}")
+        await self.rt.snap("invite-filled")
+
+        # 5) 确定
+        if not await self._click_region("center", TEXTS["confirm"], "「确定」"):
+            raise FlowError("找不到确定按钮")
+        await self.page.wait_for_timeout(3000)
+        await self.rt.snap("invite-done")
+        await self.log("邀请码兑现流程已走完", "success")
+
+    # ------------------------------------------------------------------
     # 支付表单
     # ------------------------------------------------------------------
 
@@ -699,8 +878,23 @@ class MuseFlow:
             await put("exp", f'{card["exp_month"]}{card["exp_year"][-2:]}')
 
         await put("cvc", card["cvc"])
-        if not await put("postal", card.get("postal", "")):
-            pass
+
+        # 有些结账页在填完 CVV 之后才展开邮编等字段，所以再探一次
+        try:
+            again = await frame.evaluate(CARD_PROBE_JS, {})
+        except Exception:
+            again = None
+        if again and again.get("marked"):
+            marked = set(again["marked"])
+            await self.log(f"填完 CVV 后新增字段：{sorted(marked)}")
+
+        # 邮编：卡片自带的优先，否则用控制台配置的默认值
+        postal = (card.get("postal") or "").strip() or str(
+            self.rt.settings.get("checkout_postal") or ""
+        ).strip()
+        if postal and await put("postal", postal):
+            await self.log(f"邮编已填入：{postal}")
+
         await put("name", card.get("holder", ""))
         await put("address", (card.get("extra") or {}).get("address", ""))
         await put("city", (card.get("extra") or {}).get("city", ""))
