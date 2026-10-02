@@ -16,6 +16,7 @@
     <button class="tab-btn" data-tab="settings">设置</button>
   </nav>
   <div class="topbar-right">
+    <span id="resinPill" class="pill off" title="Resin 代理池状态">Resin 未启用</span>
     <span id="conn" class="pill off">未连接</span>
     <span id="statLine" class="muted"></span>
   </div>
@@ -121,6 +122,28 @@
       <label class="chk"><input type="checkbox" id="skymailCreate"> 顺便试建一个邮箱（验证自动建邮箱能力）</label>
       <button id="btnTestSkymail">测试连接</button>
       <span id="skymailResult" class="muted small"></span>
+    </div>
+
+    <div class="card">
+      <h3>Resin 代理池</h3>
+      <p class="muted small">
+        skymail HTTP API 走<b>反向代理</b>（路径拼接 + <code>X-Resin-Account</code> 头），
+        muse.ai 浏览器流量走<b>正向代理</b>（Playwright 原生代理认证）。<br>
+        Account 统一用<b>任务邮箱</b>（登录前就已生成，天然稳定），
+        skymail 账号级操作（登录 / 枚举邮箱 / 推断域名）用 skymail 登录邮箱。
+      </p>
+      <div class="grid3">
+        <label class="fld"><span>resin_url（含 Token）</span>
+          <input id="s_resin_url" placeholder="http://127.0.0.1:2260/my-token"></label>
+        <label class="fld"><span>Platform</span>
+          <input id="s_resin_platform_name" placeholder="Default"></label>
+      </div>
+      <label class="chk"><input type="checkbox" id="s_resin_enabled">
+        启用 Resin（配了 resin_url 就默认启用；调试时可临时关掉直连）</label>
+      <div class="row">
+        <button id="btnTestResin">测试连通性 / 粘性</button>
+      </div>
+      <span id="resinResult" class="muted small"></span>
     </div>
 
     <div class="card">

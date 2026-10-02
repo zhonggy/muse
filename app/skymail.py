@@ -15,8 +15,11 @@ import re
 import string
 import time
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
+
+from .resin import ResinConfig, current_account, resin_account_ctx
 
 CODE_RE = re.compile(r"(?<!\d)(\d{6})(?!\d)")
 TAG_RE = re.compile(r"<[^>]+>")
@@ -92,10 +95,15 @@ class SkymailClient:
         email: str,
         password: str,
         timeout: float = 20.0,
+        resin: ResinConfig | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.email = email
         self.password = password
+        #: 任务级请求没显式指定身份时用它（skymail 主账号）
+        self.default_account = email or ""
+        #: 配了 Resin 后，所有出网请求都走反向代理
+        self.resin: ResinConfig | None = resin
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=timeout,
@@ -106,6 +114,12 @@ class SkymailClient:
         # 某些 skymail 实例的 /api/email/list 是坏的（恒返 500 D1_TYPE_ERROR），
         # 坏一次就记下来，后面直接走 /api/allEmail/list
         self._email_list_broken = False
+
+    def set_resin(
+        self, resin: ResinConfig | None, default_account: str = ""
+    ) -> None:
+        self.resin = resin
+        self.default_account = default_account or self.email or ""
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -127,6 +141,8 @@ class SkymailClient:
                 pass
         self.email = email
         self.password = password
+        if not self.default_account:
+            self.default_account = email or ""
         self._token = None
         self._accounts = None
 
@@ -138,11 +154,51 @@ class SkymailClient:
 
     # ---------------- 基础请求 ----------------
 
-    async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
-        headers = dict(kwargs.pop("headers", {}) or {})
+    def _resolve(self, path: str, params: dict | None = None) -> str:
+        """拼出目标绝对 URL（含查询参数）。"""
+        url = f"{self.base_url}{path}"
+        if params:
+            clean = {k: v for k, v in params.items() if v is not None}
+            if clean:
+                url = f"{url}?{urlencode(clean)}"
+        return url
+
+    def _build_headers(self, extra: dict | None = None) -> dict:
+        headers = dict(extra or {})
         if self._token:
             headers["Authorization"] = self._token
-        resp = await self._client.request(method, path, headers=headers, **kwargs)
+        return headers
+
+    def _via_resin(
+        self, url: str, headers: dict, account: str | None = None
+    ) -> str:
+        """把 URL 改写成 Resin 反代 URL，并在请求头里带上身份。
+
+        所有涉及具体账号的请求都必须经过这里。
+        account 显式传入时优先（如登录固定用 skymail 主账号），
+        否则用当前任务上下文里的身份，再退到默认账号。
+        """
+        if self.resin is None:
+            return url
+        who = account or current_account.get() or self.default_account
+        if not who:
+            raise SkymailError(
+                "Resin 已启用但拿不到 Account 标识（既没有任务身份也没有默认账号）"
+            )
+        headers.update(self.resin.account_header(who))
+        return self.resin.reverse_url(url)
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        headers = self._build_headers(kwargs.pop("headers", None))
+        url = self._via_resin(self._resolve(path, params), headers)
+        resp = await self._client.request(method, url, headers=headers, **kwargs)
         if resp.status_code >= 400:
             raise SkymailError(f"HTTP {resp.status_code}: {resp.text[:300]}")
         try:
@@ -163,8 +219,16 @@ class SkymailClient:
             return self._token
         if not self.email or not self.password:
             raise SkymailError("未配置 skymail 登录邮箱/密码")
+        # 登录是账号级操作，固定用 skymail 主账号作为 Resin 身份
+        headers = self._build_headers()
+        url = self._via_resin(
+            self._resolve("/api/login"),
+            headers,
+            account=self.default_account or self.email,
+        )
         resp = await self._client.post(
-            "/api/login",
+            url,
+            headers=headers,
             json={"email": self.email, "password": self.password},
         )
         if resp.status_code >= 400:
@@ -298,7 +362,10 @@ class SkymailClient:
         for _ in range(attempts):
             email = f"{_random_local_part()}@{dom}"
             try:
-                acc = await self.add_account(email)
+                # 建邮箱这一步就用新邮箱作为 Resin 身份，
+                # 这样这个任务的信箱操作与后续注册流量会落在同一个粘性 IP 上
+                with resin_account_ctx(email):
+                    acc = await self.add_account(email)
             except SkymailError as exc:
                 msg = str(exc)
                 last_err = exc

@@ -12,6 +12,7 @@
     shots: {},
     wsOk: false,
     renderedLogs: 0,
+    resin: null,
   };
 
   // 用户改过、还没保存的字段。定时刷新时不能覆盖它们，
@@ -170,8 +171,10 @@
         state.settings = msg.settings || {};
         state.cards = msg.cards || [];
         state.tasks = msg.tasks || [];
+        state.resin = msg.resin || null;
         fillSettings();
         renderCards();
+        renderResinPill();
         renderTasks();
         break;
       case 'log':
@@ -219,6 +222,21 @@
   // ------------------------------------------------------------------
   // 任务渲染
   // ------------------------------------------------------------------
+
+  function renderResinPill() {
+    const el = $('resinPill');
+    if (!el) return;
+    const r = state.resin;
+    if (r) {
+      el.textContent = `Resin: ${r.platform}`;
+      el.className = 'pill on';
+      el.title = `反向代理（skymail）+ 正向代理（浏览器）\n${r.base}\nPlatform=${r.platform} Token=${r.token_masked}`;
+    } else {
+      el.textContent = 'Resin 未启用';
+      el.className = 'pill off';
+      el.title = '未配置 resin_url 或已关闭，所有请求直连';
+    }
+  }
 
   function renderTasks() {
     const box = $('taskList');
@@ -546,6 +564,8 @@
     s_base: 'skymail_base_url',
     s_email: 'skymail_email',
     s_password: 'skymail_password',
+    s_resin_url: 'resin_url',
+    s_resin_platform_name: 'resin_platform_name',
     s_code_timeout: 'code_timeout',
     s_code_poll_interval: 'code_poll_interval',
     s_muse_url: 'muse_url',
@@ -562,6 +582,7 @@
     s_auto_fill_card: 'auto_fill_card',
     s_stop_at_verification: 'stop_at_verification',
     s_manual_takeover: 'manual_takeover',
+    s_resin_enabled: 'resin_enabled',
   };
 
   function fillSettings() {
@@ -627,6 +648,29 @@
       }
       if (r.created) parts.push(`试建成功：${r.created.email}`);
       $('skymailResult').textContent = parts.join(' | ');
+    }));
+
+    $('btnTestResin').addEventListener('click', guard(async () => {
+      $('resinResult').textContent = '测试中…（反代 + 正代各打两次 IP 回显）';
+      const r = await api('POST', '/api/resin/test', {
+        resin_url: $('s_resin_url').value.trim(),
+        resin_platform_name: $('s_resin_platform_name').value.trim(),
+      });
+      const parts = [`Platform=${r.config.platform}`];
+      if (r.reverse) {
+        parts.push(`反代 IP=${r.reverse.ip}${r.reverse.sticky ? ' ✓粘性' : ' ✗粘性异常'}`);
+      } else {
+        parts.push(`反代失败：${r.reverse_error || '未知'}`);
+      }
+      if (r.forward) {
+        parts.push(`正代 IP=${r.forward.ip}`);
+      } else {
+        parts.push(`正代失败：${r.forward_error || '未知'}`);
+      }
+      if (typeof r.same_ip === 'boolean') {
+        parts.push(r.same_ip ? '✓ 正反代同一出口' : '⚠ 正反代出口不同');
+      }
+      $('resinResult').textContent = parts.join(' | ');
     }));
 
     $('btnCreate').addEventListener('click', guard(createTasks));
@@ -760,8 +804,10 @@
     state.settings = s.settings;
     state.cards = s.cards;
     state.tasks = s.tasks;
+    state.resin = s.resin || null;
     fillSettings();
     renderCards();
+    renderResinPill();
     renderTasks();
     // 不要重新 selectTask：那会清空日志和实时画面，每 8 秒闪一次
     if (state.selected && !state.tasks.some((t) => t.id === state.selected)) {

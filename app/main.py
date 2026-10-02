@@ -26,6 +26,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 
 from . import browser as browser_mod
+from . import resin as resin_mod
 from .config import CONSOLE_PASSWORD, CONSOLE_USER, STATIC_DIR, ensure_dirs
 from .events import EventBus
 from .runner import STATUS_PENDING, STATUS_STOPPED, TaskRunner
@@ -108,6 +109,7 @@ async def api_state(_: None = Depends(auth)) -> dict:
             store.get_settings().get("skymail_email")
             and store.get_settings().get("skymail_password")
         ),
+        "resin": runner.resin.describe() if runner.resin else None,
     }
 
 
@@ -152,6 +154,8 @@ async def api_skymail_test(payload: dict | None = Body(default=None),
     if not email or not password:
         raise HTTPException(400, "请先填写 skymail 邮箱和密码")
     client = SkymailClient(base, email, password)
+    # 这个探测也走 Resin，用的就是正式的身份策略
+    client.set_resin(runner.resin, email)
     try:
         info = await client.me()
         accounts = await client.list_accounts()
@@ -182,6 +186,76 @@ async def api_skymail_test(payload: dict | None = Body(default=None),
         raise HTTPException(400, f"连接失败：{exc}") from exc
     finally:
         await client.close()
+
+
+# ----------------------------------------------------------------------
+# Resin 代理池
+# ----------------------------------------------------------------------
+
+
+@app.post("/api/resin/test")
+async def api_resin_test(payload: dict | None = Body(default=None),
+                         _: None = Depends(auth)) -> dict:
+    """探测 Resin 连通性与粘性。
+
+    反向代理与正向代理各打一次 IP 回显，并验证：
+      - 同一身份连续两次是否拿到同一个 IP（粘性）
+      - 反代与正代是否落在同一个出口 IP
+    """
+    settings = store.get_settings()
+    payload = payload or {}
+    merged = dict(settings)
+    for key in ("resin_url", "resin_platform_name"):
+        if payload.get(key) is not None:
+            merged[key] = payload[key]
+    merged["resin_enabled"] = True
+    try:
+        cfg = resin_mod.from_settings(merged)
+    except resin_mod.ResinError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if cfg is None:
+        raise HTTPException(400, "请先填写 resin_url")
+
+    account = str(payload.get("account") or settings.get("skymail_email") or "probe")
+    out: dict = {"config": cfg.describe(), "account": account}
+
+    try:
+        first = await resin_mod.probe(cfg, account, "reverse")
+        second = await resin_mod.probe(cfg, account, "reverse")
+        out["reverse"] = {"ip": first["ip"], "sticky": first["ip"] == second["ip"]}
+    except Exception as exc:
+        out["reverse_error"] = str(exc)[:200]
+
+    try:
+        fwd = await resin_mod.probe(cfg, account, "forward")
+        out["forward"] = {"ip": fwd["ip"]}
+    except Exception as exc:
+        out["forward_error"] = str(exc)[:200]
+
+    if "reverse" in out and "forward" in out:
+        out["same_ip"] = out["reverse"]["ip"] == out["forward"]["ip"]
+    return out
+
+
+@app.post("/api/resin/inherit-lease")
+async def api_resin_inherit_lease(payload: dict = Body(...),
+                                  _: None = Depends(auth)) -> dict:
+    """把临时身份的 IP 租约继承给稳定身份。
+
+    本项目正常流程不需要（任务邮箱在第一个请求前就已确定）；
+    留给后续「登录前拿不到标识」的场景，别把 TempIdentity 写死。
+    """
+    cfg = resin_mod.from_settings(store.get_settings())
+    if cfg is None:
+        raise HTTPException(400, "未启用 Resin 或未配置 resin_url")
+    try:
+        return await resin_mod.inherit_lease(
+            cfg,
+            str(payload.get("parent_account") or ""),
+            str(payload.get("new_account") or ""),
+        )
+    except resin_mod.ResinError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 # ----------------------------------------------------------------------
@@ -557,6 +631,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
             "settings": _public_settings(store.get_settings()),
             "cards": store.list_cards(),
             "tasks": [copy.deepcopy(t) for t in store.list_tasks()],
+            "resin": runner.resin.describe() if runner.resin else None,
         })
         receiver = asyncio.create_task(_ws_receiver(ws))
         try:

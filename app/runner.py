@@ -19,6 +19,7 @@ from typing import Any
 from playwright.async_api import BrowserContext, Page
 
 from . import browser as browser_mod
+from . import resin as resin_mod
 from .config import SHOT_DIR, SESSION_DIR
 from .events import EventBus
 from .muse_flow import FlowError, FlowStopped, MuseFlow
@@ -366,7 +367,25 @@ class TaskRuntime:
                 storage_state = json.loads(p.read_text("utf-8"))
                 await self.log(f"复用登录态：{session_name}")
 
-        self.context = await browser_mod.manager.new_context(settings, storage_state)
+        # muse.ai 的浏览器流量走 Resin 正向代理（Playwright 原生支持带认证的 HTTP 代理）
+        proxy = None
+        resin = self.runner.resin
+        if resin is not None:
+            account = str(self.task.get("email") or "")
+            if account:
+                try:
+                    proxy = resin.playwright_proxy(account)
+                except resin_mod.ResinError as exc:
+                    raise FlowError(f"Resin 正向代理配置失败：{exc}") from exc
+                await self.log(
+                    f"浏览器走 Resin 正向代理（Platform={resin.platform}，Account={account}）"
+                )
+            else:
+                await self.log("没有 Account 标识，浏览器不走 Resin", "warn")
+
+        self.context = await browser_mod.manager.new_context(
+            settings, storage_state, proxy=proxy
+        )
         self.page = await self.context.new_page()
         self._active_page = self.page
         self.page.set_default_timeout(int(settings.get("step_timeout", STEP_TIMEOUT)) * 1000)
@@ -415,6 +434,7 @@ class TaskRunner:
         self._tasks: dict[str, asyncio.Task] = {}
         self._sem: asyncio.Semaphore | None = None
         self._sem_size = 0
+        self.resin: resin_mod.ResinConfig | None = None
 
     # ------------------------------------------------------------------
 
@@ -425,6 +445,21 @@ class TaskRunner:
             self.settings.get("skymail_email") or "",
             self.settings.get("skymail_password") or "",
         )
+        # Resin 配置坏了不应该让整个服务起不来，记一条日志然后当没配
+        try:
+            self.resin = resin_mod.from_settings(self.settings)
+        except resin_mod.ResinError as exc:
+            log.warning("Resin 配置无效，已忽略：%s", exc)
+            self.resin = None
+        self.skymail.set_resin(
+            self.resin, self.settings.get("skymail_email") or ""
+        )
+        if self.resin:
+            log.info(
+                "Resin 已启用：base=%s platform=%s",
+                self.resin.base,
+                self.resin.platform,
+            )
 
     @property
     def active_ids(self) -> list[str]:
@@ -595,12 +630,22 @@ class TaskRunner:
                 await rt.log(f"开始处理（第 {task['attempts']} 次）")
                 await rt.prepare_email()
                 await rt.log(f"目标邮箱：{task['email']}")
-                await rt.open_browser()
-                flow = MuseFlow(rt)
-                await asyncio.wait_for(
-                    flow.run(),
-                    timeout=max(300, int(self.settings.get("code_timeout", 240)) + 420),
-                )
+
+                # 从这一刻起，这个任务的所有出网请求（skymail 收信 + muse 注册）
+                # 都挂在同一个 Resin Account 上，保证粘性 IP
+                account_token = resin_mod.set_account(str(task.get("email") or ""))
+                try:
+                    await rt.open_browser()
+                    flow = MuseFlow(rt)
+                    await asyncio.wait_for(
+                        flow.run(),
+                        timeout=max(
+                            300, int(self.settings.get("code_timeout", 240)) + 420
+                        ),
+                    )
+                finally:
+                    resin_mod.current_account.reset(account_token)
+
                 task.update({
                     "status": STATUS_SUCCESS,
                     "needs": None,

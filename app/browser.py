@@ -74,7 +74,13 @@ class BrowserManager:
             raise RuntimeError("BrowserManager 尚未 start()")
         return self._browser
 
-    async def new_context(self, settings: dict, storage_state: Any = None) -> BrowserContext:
+    async def new_context(
+        self,
+        settings: dict,
+        storage_state: Any = None,
+        proxy: dict | None = None,
+    ) -> BrowserContext:
+        """proxy 显式传入时优先（Resin 正向代理走这里）。"""
         await self.start(
             headless=bool(settings.get("headless", True)),
             slow_mo=int(settings.get("slow_mo", 0) or 0),
@@ -96,9 +102,12 @@ class BrowserManager:
         }
         if storage_state:
             ctx_kwargs["storage_state"] = storage_state
-        proxy = (settings.get("proxy") or "").strip()
         if proxy:
-            ctx_kwargs["proxy"] = {"server": proxy}
+            ctx_kwargs["proxy"] = proxy
+        else:
+            plain = (settings.get("proxy") or "").strip()
+            if plain:
+                ctx_kwargs["proxy"] = {"server": plain}
 
         context = await self.browser.new_context(**ctx_kwargs)
         context.set_default_timeout(int(settings.get("step_timeout", 60)) * 1000)

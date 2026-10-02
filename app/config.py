@@ -49,9 +49,17 @@ DEFAULT_SETTINGS: dict = {
     "email_domain": os.getenv("MUSE_EMAIL_DOMAIN", ""),   # 留空则自动取 skymail 已有域名
     "default_card_id": "",                                # 默认使用的卡
 
+    # --- Resin 代理池 ---
+    # resin_url 含代理基础地址与 Token，形如 http://127.0.0.1:2260/my-token
+    "resin_url": os.getenv("RESIN_URL", ""),
+    "resin_platform_name": os.getenv("RESIN_PLATFORM_NAME", "Default"),
+    # 配了 resin_url 就默认启用；想临时绕过（调试）可以关掉
+    "resin_enabled": _bool("RESIN_ENABLED", True),
+
     # --- 浏览器 ---
     "headless": _bool("MUSE_HEADLESS", True),
     "slow_mo": _int("MUSE_SLOW_MO", 0),
+    # 仅在未配置 Resin 时生效（Resin 优先级更高，见 app/resin.py）
     "proxy": os.getenv("MUSE_PROXY", ""),
     "locale": os.getenv("MUSE_LOCALE", "zh-CN"),
     "timezone": os.getenv("MUSE_TIMEZONE", "Asia/Shanghai"),

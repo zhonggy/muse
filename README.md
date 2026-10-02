@@ -121,7 +121,7 @@ docker compose logs -f      # 看启动日志，Ctrl+C 退出（不影响容器�
 
 浏览器访问 `http://<服务器IP>:8080/`，输入 `.env` 里的 `MUSE_CONSOLE_USER` / `MUSE_CONSOLE_PASSWORD`。
 
-右上角出现绿色 **「已连接」** = WebSocket 通了。若一直是「未连接」，见[第 8 节](#8-故障排查)（多半是反向代理没转发 WebSocket 头）。
+右上角出现绿色 **「已连接」** = WebSocket 通了。若一直是「未连接」，见[第 9 节](#9-故障排查)（多半是反向代理没转发 WebSocket 头）。
 
 ### 2.6 首次配置（三件事）
 
@@ -378,7 +378,92 @@ python tools/probe_muse.py
 
 ---
 
-## 5. 任务状态机
+## 5. Resin 代理池接入
+
+Resin 用 `Platform + Account` 识别业务身份，据此给出**基于身份的粘性代理**。
+
+### 5.1 两种方式怎么用的
+
+| 出口 | 方式 | 为什么 |
+|---|---|---|
+| skymail HTTP API | **反向代理** | 纯 Web API，路径拼接最省事，不用碰客户端的代理配置 |
+| muse.ai 浏览器流量 | **正向代理** | Playwright 原生支持带认证的 HTTP 代理；浏览器没法做反代 |
+
+同一个项目里混用是允许的 —— 按每个请求的特征选，不必二选一。
+
+### 5.2 Account 怎么选（必须稳定）
+
+**同一个账号的标识一定要稳定**，否则 Resin 会把同一个业务认成两个身份、发两个 IP。
+
+| 请求 | Account | 说明 |
+|---|---|---|
+| 建邮箱 / 收信 / muse 注册 | **任务邮箱**（如 `fse53@1313223.cyou`） | 登录前就已生成 |
+| skymail 登录 / 枚举邮箱 / 推断域名 | **skymail 登录邮箱** | 账号级操作 |
+
+任务邮箱在发第一个请求之前就确定了，所以本项目**不需要 TempIdentity，
+也就用不上 `inherit-lease`**。（`POST /api/resin/inherit-lease` 仍然提供，
+留给以后「登录前拿不到标识」的场景 —— 注意别把 TempIdentity 写死，
+否则所有账号会继承同一个租约。）
+
+### 5.3 配置
+
+「设置」页 → **Resin 代理池**：
+
+| 字段 | 说明 |
+|---|---|
+| `resin_url` | 含代理基础地址与 Token，如 `http://127.0.0.1:2260/my-token` |
+| `Platform` | 默认 `Default`；必须是单个完整路径段（不能含 `/`） |
+| 启用 Resin | 配了 `resin_url` 就默认启用；调试时可临时关掉直连 |
+
+点 **「测试连通性 / 粘性」** 会：
+
+1. 走反代打**两次** IP 回显 → 验证粘性（同一身份两次应是同一个 IP）
+2. 走正代打一次 IP 回显
+3. 对比正反代是否落在同一个出口
+
+顶栏也会显示 `Resin: <Platform>` 的绿色标记，一眼看出当前是否走代理。
+
+### 5.4 实际发出的请求长什么样
+
+**反向代理（skymail）**：
+
+```
+GET http://127.0.0.1:2260/my-token/Default/https/skymail.ink/api/email/list?accountId=9&size=8
+X-Resin-Account: fse53@1313223.cyou
+Authorization: <skymail token>
+```
+
+**正向代理（浏览器）**：
+
+```js
+// Playwright context proxy
+{ server: "http://127.0.0.1:2260",
+  username: "Default.fse53@1313223.cyou",
+  password: "my-token" }
+```
+
+即 Resin 规范的 `Platform.Account:RESIN_TOKEN`。Account 里的 `@` 等字符在需要拼成
+URL 时（`forward_proxy_url()`）会自动百分号编码。
+
+### 5.5 自测
+
+```bash
+python tools/test_resin.py
+```
+
+起一个**假 Resin 服务**，逐项断言（共 21 项）：
+
+- 反代 URL 与规范给的例子完全一致
+- 正代凭据是 `Platform.Account:RESIN_TOKEN`
+- skymail 的每个请求（含**登录**）都被改写成反代 URL 且带上正确的身份
+- 任务上下文里收信切到任务邮箱身份，离开后回到默认身份
+- 建邮箱那一步用的是「新邮箱」当身份
+- 浏览器 context 确实带上了正代参数
+- 未启用 Resin 时请求直连、不带 `X-Resin-Account`
+
+---
+
+## 6. 任务状态机
 
 ```
 pending ──start──▶ running ──┬──▶ success   （已回到主页，登录态已保存）
@@ -396,7 +481,7 @@ pending ──start──▶ running ──┬──▶ success   （已回到�
 
 ---
 
-## 6. 配置项
+## 7. 配置项
 
 `.env`（容器环境变量）与控制台「设置」页等价，控制台优先级更高。
 
@@ -417,13 +502,16 @@ pending ──start──▶ running ──┬──▶ success   （已回到�
 | `MUSE_STOP_AT_VERIFICATION` | `false` | `true` = 到年龄验证页就停，不绑卡 |
 | `MUSE_AUTO_FILL_CARD` | `true` | 自动填卡 |
 | `MUSE_MANUAL_TAKEOVER` | `true` | 允许控制台点击接管 |
-| `MUSE_PROXY` | 空 | 如 `http://user:pass@host:port` |
+| `MUSE_PROXY` | 空 | 直连代理，如 `http://user:pass@host:port`；**仅在未配置 Resin 时生效** |
+| `RESIN_URL` | 空 | Resin 入口（含 Token），如 `http://127.0.0.1:2260/my-token` |
+| `RESIN_PLATFORM_NAME` | `Default` | Resin Platform，必须是单个路径段 |
+| `RESIN_ENABLED` | `true` | 配了 `RESIN_URL` 就默认启用 |
 | `MUSE_LOCALE` / `MUSE_TIMEZONE` | `zh-CN` / `Asia/Shanghai` | 浏览器上下文 |
 | `MUSE_VIEWPORT_W` / `MUSE_VIEWPORT_H` | `1280` / `820` | 视口 |
 
 ---
 
-## 7. 选择器失效了怎么办
+## 8. 选择器失效了怎么办
 
 muse.ai 改版时**不需要改代码**：在 `data/selectors.json` 里覆盖即可。
 
@@ -445,7 +533,7 @@ muse.ai 改版时**不需要改代码**：在 `data/selectors.json` 里覆盖即
 
 ---
 
-## 8. 故障排查
+## 9. 故障排查
 
 | 现象 | 排查 |
 |---|---|
@@ -459,27 +547,36 @@ muse.ai 改版时**不需要改代码**：在 `data/selectors.json` 里覆盖即
 | Chromium 起不来 / 崩溃 | `docker-compose.yml` 里 `shm_size: 1gb`；确认容器有 `--no-sandbox`（已内置） |
 | 卡片解密失败 | `MUSE_SECRET_KEY` 与写入时不一致；要么恢复原密钥，要么删掉旧卡重新录入 |
 | 中文截图乱码 | Dockerfile 已装 `fonts-noto-cjk`；裸机部署需自行安装中文字体 |
+| 顶栏 Resin 标记是红色 | 没配 `resin_url` 或 `resin_enabled=false`。设置页填好后点保存 |
+| Resin 测试报「粘性异常」 | 同一个 Account 两次拿到不同 IP。检查 `resin_url` 里的 Token 是否正确、Platform 是否写错 |
+| 所有请求都失败且日志提示 Account | Resin 已启用但拿不到身份。确认任务邮箱已生成，或 skymail 登录邮箱已填 |
+| 想临时绕过 Resin 排查 | 设置页取消勾选「启用 Resin」→ 保存，所有请求改直连 |
 
 ---
 
-## 9. 目录结构
+## 10. 目录结构
 
 ```
 .
 ├── app/
 │   ├── main.py          FastAPI 路由 + WebSocket + 静态托管
 │   ├── runner.py        TaskRuntime（流程对外接口）/ TaskRunner（并发调度）
-│   ├── muse_flow.py     muse.ai 全流程（9 个步骤 + 支付表单 + 等待验证完成）
-│   ├── browser.py       Playwright Browser 生命周期 + stealth
-│   ├── skymail.py       skymail API 客户端 + 验证码正则抽取
+│   ├── muse_flow.py     muse.ai 全流程（注册资料 + 支付表单 + 等待验证完成）
+│   ├── browser.py       Playwright Browser 生命周期 + stealth + 正代注入
+│   ├── resin.py         Resin 代理池（反代 URL / 正代凭据 / 身份上下文）
+│   ├── skymail.py       skymail API 客户端（经 Resin 反代）+ 验证码正则抽取
+│   ├── names.py         英文姓名池（100 名 / 100 姓）
 │   ├── js_helpers.py    注入页面的 JS（穿透 shadow DOM / 真实鼠标事件序列）
 │   ├── selectors.py     选择器与文案表（可被 data/selectors.json 覆盖）
 │   ├── store.py         JSON 持久化（设置 / 卡片 / 任务）
 │   ├── crypto.py        Fernet 加解密 + 卡号脱敏
+│   ├── util.py          随机生日
 │   ├── events.py        pub/sub 事件总线
 │   └── config.py        配置默认值
 ├── static/              控制台前端（index.html / app.js / style.css）
-├── tools/probe_muse.py  真实站点选择器探针
+├── tools/
+│   ├── probe_muse.py    真实站点选择器探针
+│   └── test_resin.py    Resin 接入自测（起假 Resin 服务跑断言）
 ├── scripts/             dev.sh / deploy.sh
 ├── data/                运行时数据（store.json、secret.key、sessions/、shots/）
 ├── Dockerfile
@@ -488,7 +585,7 @@ muse.ai 改版时**不需要改代码**：在 `data/selectors.json` 里覆盖即
 
 ---
 
-## 10. 安全与合规须知
+## 11. 安全与合规须知
 
 - 控制台持有**支付卡信息**，请务必：设置强 `MUSE_CONSOLE_PASSWORD`、走 HTTPS、只在内网或 VPN 暴露、别把 8080 直接开到公网。
 - `MUSE_SECRET_KEY` 一定要显式设置并妥善保存；它丢了，已存卡片就解不开。
@@ -498,7 +595,7 @@ muse.ai 改版时**不需要改代码**：在 `data/selectors.json` 里覆盖即
 
 ---
 
-## 11. 已知限制
+## 12. 已知限制
 
 - **年龄验证依赖第三方结账页结构**，字段探测是启发式的（`autocomplete` / `name` / `id` / `placeholder` 多路匹配）。
   结账页大改时可能识别不到 → 任务会暂停，用实时画面人工完成。
