@@ -37,12 +37,10 @@ class SkymailError(RuntimeError):
 
 
 def _random_local_part() -> str:
-    """生成看起来正常的邮箱前缀，如 kx7f2m9q。"""
-    letters = string.ascii_lowercase
-    head = "".join(random.choices(letters, k=3))
-    mid = "".join(random.choices(string.digits, k=4))
-    tail = "".join(random.choices(letters, k=2))
-    return f"{head}{mid}{tail}"
+    """生成邮箱前缀：3 个小写字母 + 2 位数字，如 fse53。"""
+    letters = "".join(random.choices(string.ascii_lowercase, k=3))
+    digits = "".join(random.choices(string.digits, k=2))
+    return f"{letters}{digits}"
 
 
 def strip_html(raw: str) -> str:

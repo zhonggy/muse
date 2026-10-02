@@ -141,7 +141,9 @@ docker compose logs -f      # 看启动日志，Ctrl+C 退出（不影响容器�
 
 看到邮箱列表 = 收码链路通了。
 
-**邮箱不用你准备** —— 每个任务启动时会通过 `POST /api/account/add` 自动创建一个随机邮箱（域名取自你 skymail 里已有的邮箱）。
+**邮箱不用你准备** —— 每个任务启动时会通过 `POST /api/account/add` 自动创建一个随机邮箱，
+前缀格式为 **3 个小写字母 + 2 位数字**（如 `fse53`），域名取自你 skymail 里已有的邮箱。
+建重了就自动换一个前缀重试（最多 12 次）。
 点「测试连接」旁边勾上「顺便试建一个邮箱」还能顺带验证这个能力。
 
 > 如果 skymail 开了「添加邮箱需人机验证」，自动建邮箱会失败并明确报错，需要先去后台关掉。
@@ -169,15 +171,15 @@ docker compose logs -f      # 看启动日志，Ctrl+C 退出（不影响容器�
 
 ```
 [step] ▶ 创建收件邮箱
-[info] 已通过 skymail API 创建邮箱：kx7f2m9q@your-domain.com
-[info] 目标邮箱：kx7f2m9q@your-domain.com
+[info] 已通过 skymail API 创建邮箱：fse53@your-domain.com
+[info] 目标邮箱：fse53@your-domain.com
 [step] ▶ 打开站点
 [info] 已打开 https://muse.ai/（标题：Muse — Your Personal AI Agent）
 [step] ▶ 展开登录表单
 [info] 邮箱输入框已可见，跳过展开步骤
 [step] ▶ 填写邮箱
 [info] 收件箱就绪：accountId=12，基线邮件 0 封
-[info] 邮箱已填入：kx7f2m9q@your-domain.com
+[info] 邮箱已填入：fse53@your-domain.com
 [step] ▶ 提交邮箱并等待验证码
 [info] 已点击「继续」
 [info] 已进入验证码界面，开始轮询 skymail 收件箱
@@ -348,7 +350,8 @@ python tools/probe_muse.py
 - **并发数**（1–8）：同时跑几个任务；会自动写回全局设置
 - **跑多少次**（1–500）：一次排多少个任务
 - **收件邮箱不用填** —— 每个任务启动时调 `POST /api/account/add` 自动创建一个随机邮箱，
-  域名取 `MUSE_EMAIL_DOMAIN`，为空则取你 skymail 里已有邮箱的域名
+  前缀为 3 个小写字母 + 2 位数字（如 `fse53`），域名取 `MUSE_EMAIL_DOMAIN`，
+  为空则取你 skymail 里已有邮箱的域名
 - **生日不用填** —— 每个任务在 `[birthday_year_min, birthday_year_max]`（默认 1995–2002）年内随机
 - 支付卡选「不绑卡」→ 跑到年龄验证页会**暂停**，控制台弹窗让你现场给卡
 - 选「自动轮换」→ 多张卡按任务顺序轮流分配
