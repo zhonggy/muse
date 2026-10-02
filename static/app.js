@@ -230,7 +230,8 @@
     if (r) {
       el.textContent = `Resin: ${r.platform}`;
       el.className = 'pill on';
-      el.title = `反向代理（skymail）+ 正向代理（浏览器）\n${r.base}\nPlatform=${r.platform} Token=${r.token_masked}`;
+      el.title = `反向代理（skymail）+ 正向代理（浏览器）\n${r.base}\n`
+        + `Platform=${r.platform} Token=${r.token_masked}`;
     } else {
       el.textContent = 'Resin 未启用';
       el.className = 'pill off';
@@ -671,6 +672,7 @@
         parts.push(r.same_ip ? '✓ 正反代同一出口' : '⚠ 正反代出口不同');
       }
       $('resinResult').textContent = parts.join(' | ');
+      if (r.hint) toast(r.hint, 'err');
     }));
 
     $('btnCreate').addEventListener('click', guard(createTasks));

@@ -234,6 +234,18 @@ async def api_resin_test(payload: dict | None = Body(default=None),
 
     if "reverse" in out and "forward" in out:
         out["same_ip"] = out["reverse"]["ip"] == out["forward"]["ip"]
+
+    # 认证类错误给个针对性提示：Resin 的管理端令牌与代理令牌是两回事
+    blob = " ".join(str(out.get(k, "")) for k in ("reverse_error", "forward_error"))
+    if "AUTH_FAILED" in blob or "407" in blob or "403" in blob:
+        out["hint"] = (
+            "认证失败。resin_url 末尾的 Token 必须是「代理令牌」"
+            "（服务端 RESIN_PROXY_TOKEN），不是控制台登录用的「管理端令牌」"
+            "（RESIN_ADMIN_TOKEN），两者不同。"
+            "到 Resin 面板用管理令牌登录 →「接入」页填入代理令牌，"
+            "或从 Resin 部署的 RESIN_PROXY_TOKEN 环境变量取值。"
+            "若该部署本就未设代理令牌（代理免认证），resin_url 填纯基础地址即可。"
+        )
     return out
 
 

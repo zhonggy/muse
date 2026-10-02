@@ -117,6 +117,19 @@ async def main() -> int:
         resin.forward_proxy_url("a@b.com"),
     )
 
+    # 代理免认证（RESIN_PROXY_TOKEN 为空）
+    open_resin = ResinConfig(f"http://127.0.0.1:{port}", "US")
+    check("免认证模式：prefix 就是基础地址",
+          open_resin.prefix == f"http://127.0.0.1:{port}", open_resin.prefix)
+    check("免认证模式：auth_required=False", open_resin.auth_required is False)
+    check(
+        "免认证模式：反代 URL 不含 token 段",
+        open_resin.reverse_url("https://api.example.com/healthz")
+        == f"http://127.0.0.1:{port}/US/https/api.example.com/healthz",
+        open_resin.reverse_url("https://api.example.com/healthz"),
+    )
+    check("免认证模式：正代密码为空", open_resin.proxy_credentials("Tom") == ("US.Tom", ""))
+
     # ---------- 2. 反向代理实际生效 ----------
     print("\n[2] skymail 走反向代理")
     client = SkymailClient("https://skymail.ink", "admin@d.com", "pw", resin=resin)

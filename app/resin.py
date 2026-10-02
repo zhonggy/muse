@@ -79,18 +79,15 @@ class ResinConfig:
                 "应形如 http://127.0.0.1:2260/my-token"
             )
         segments = [s for s in parsed.path.split("/") if s]
-        if not segments:
-            raise ResinError(
-                f"resin_url 里没有 Token：{self.url!r}，"
-                "应形如 http://127.0.0.1:2260/my-token"
-            )
         if len(segments) > 1:
             raise ResinError(
                 f"resin_url 的 Token 必须是单个路径段，实际为 {'/'.join(segments)!r}"
             )
         self._scheme = parsed.scheme
         self._netloc = parsed.netloc
-        self._token = segments[0]
+        # 允许空 Token：Resin 的 RESIN_PROXY_TOKEN 未设置时是「代理免认证」，
+        # 此时 resin_url 就是纯基础地址，正/反向代理都不带令牌
+        self._token = segments[0] if segments else ""
         self.platform = (self.platform or "Default").strip() or "Default"
         if "/" in self.platform:
             raise ResinError(
@@ -116,9 +113,14 @@ class ResinConfig:
         return self._token
 
     @property
+    def auth_required(self) -> bool:
+        """是否配置了代理令牌（未配置 = Resin 的「代理免认证」）。"""
+        return bool(self._token)
+
+    @property
     def prefix(self) -> str:
-        """反向代理前缀，如 http://127.0.0.1:2260/my-token。"""
-        return f"{self.base}/{self._token}"
+        """反向代理前缀。免认证时就是基础地址。"""
+        return f"{self.base}/{self._token}" if self._token else self.base
 
     # ---------------- 反向代理 ----------------
 
@@ -171,6 +173,7 @@ class ResinConfig:
 
         Resin 用**第一个 `.`** 切分 Platform，用**最后一个 `:`** 切分 Token，
         所以 Account 里带 `.` 或 `:` 都没问题。
+        代理免认证时 Token 为空字符串。
         """
         if not account:
             raise ResinError("正向代理必须提供 Account 标识")
@@ -182,10 +185,8 @@ class ResinConfig:
         Account 里的 `@` 等字符会被百分号编码，避免破坏 userinfo 结构。
         """
         user, password = self.proxy_credentials(account)
-        return (
-            f"{self._scheme}://{quote(user, safe='')}:"
-            f"{quote(password, safe='')}@{self._netloc}"
-        )
+        cred = f"{quote(user, safe='')}:{quote(password, safe='')}"
+        return f"{self._scheme}://{cred}@{self._netloc}"
 
     def playwright_proxy(self, account: str) -> dict[str, str]:
         """Playwright 的 proxy 参数（用户名/密码分开传，不走 URL 解析）。"""
@@ -199,11 +200,17 @@ class ResinConfig:
 
     def describe(self) -> dict:
         """给控制台展示用（不泄露 Token）。"""
+        if not self._token:
+            masked = "（免认证）"
+        elif len(self._token) > 4:
+            masked = self._token[:2] + "***" + self._token[-2:]
+        else:
+            masked = "***"
         return {
             "base": self.base,
             "platform": self.platform,
-            "token_masked": self._token[:2] + "***" + self._token[-2:]
-            if len(self._token) > 4 else "***",
+            "token_masked": masked,
+            "auth_required": self.auth_required,
         }
 
 
