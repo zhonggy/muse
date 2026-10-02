@@ -121,7 +121,7 @@ docker compose logs -f      # 看启动日志，Ctrl+C 退出（不影响容器�
 
 浏览器访问 `http://<服务器IP>:8080/`，输入 `.env` 里的 `MUSE_CONSOLE_USER` / `MUSE_CONSOLE_PASSWORD`。
 
-右上角出现绿色 **「已连接」** = WebSocket 通了。若一直是「未连接」，见[第 9 节](#9-故障排查)（多半是反向代理没转发 WebSocket 头）。
+右上角出现绿色 **「已连接」** = WebSocket 通了。若一直是「未连接」，见[第 10 节](#10-故障排查)（多半是反向代理没转发 WebSocket 头）。
 
 ### 2.6 首次配置（三件事）
 
@@ -463,7 +463,72 @@ python tools/test_resin.py
 
 ---
 
-## 6. 任务状态机
+## 6. 反检测
+
+muse.ai 是 Meta 的产品，对自动化很敏感。浏览器侧做了两层处理，都在
+「设置 → 浏览器与任务 → 反检测」一个开关控制（`MUSE_STEALTH`，默认开）。
+
+### 6.1 启动参数
+
+```python
+"--disable-blink-features=AutomationControlled",   # 去掉「被自动化控制」标记
+"--no-first-run", "--no-default-browser-check", "--disable-infobars",
+"--disable-component-update", "--disable-background-networking",
+"--disable-sync", "--disable-extensions", "--mute-audio",
+"--force-color-profile=srgb", "--lang=zh-CN",
+```
+
+另外用 `ignore_default_args=["--enable-automation"]` **剔掉 Playwright 自己加的
+`--enable-automation`** —— 那正是 `navigator.webdriver` 的来源，光靠上面那个
+blink 开关盖不住。
+
+### 6.2 页面注入（文档创建前）
+
+| 特征 | 处理 |
+|---|---|
+| `navigator.webdriver` | 从 `Navigator.prototype` 上**整个 delete**，删不掉才退化成返回 undefined 的 getter |
+| `window.chrome` | 补全 `runtime` / `app` / `csi()` / `loadTimes()`（headless 下是个空壳） |
+| `navigator.plugins` / `mimeTypes` | 造出 5 个 PDF 插件、10 个 mime；**挂到原生 `PluginArray.prototype` 上**，否则 `instanceof PluginArray` 是 false |
+| `navigator.pdfViewerEnabled` | `true` |
+| `Notification.permission` | `default`（Playwright 默认设成 `denied`） |
+| `permissions.query` | 通知类返回 `default`，其余透传原生实现 |
+| Client Hints | 补 `navigator.userAgentData` + 同值的 `Sec-CH-UA` 请求头 |
+| WebGL | `UNMASKED_VENDOR/RENDERER` 换成 Intel UHD 630，盖掉 SwiftShader 软渲染 |
+| 媒体编解码器 | `canPlayType` 补上 H.264/AAC（Playwright 的 Chromium 不含专有编解码器） |
+| `deviceMemory` / `maxTouchPoints` / `hardwareConcurrency` | 补成正常桌面值 |
+| `__playwright__binding__` / `__pwInitScripts` | 先设为不可枚举，DOMContentLoaded 后再删 |
+| `Function.prototype.toString` | 让被替换的函数仍报 `[native code]` |
+
+> ⚠️ 最后一项的顺序很关键：**不能在 document-start 阶段删 `__pwInitScripts`**。
+> Playwright 靠它注册并注入所有 `add_init_script` 脚本，提前删掉会把
+> `window.__museHelpers` 一起弄没，整个流程直接崩。所以是「先隐藏、后删除」。
+
+### 6.3 所有伪造值同源
+
+UA、`Sec-CH-UA` 请求头、`navigator.userAgentData`、`chrome.*` 里的版本号
+全部从**同一个 Chrome 大版本号**派生（取自 Playwright 报的真实浏览器版本）。
+检测器最常抓的不是某个特征单独存在，而是**几个特征互相矛盾** ——
+比如 UA 写 Chrome/131 而 Client Hints 写 130。
+
+### 6.4 自测
+
+```bash
+python tools/probe_stealth.py     # 40 项特征逐条比对
+```
+
+实测结果：
+
+```
+自己的探针          40 项  ->  失败 0
+bot.sannysoft.com   57 项  ->  失败 0，警告 0
+```
+
+改之前是 **34 项挂 16 项**（plugins 为 0、SwiftShader 软渲染、
+`__playwright__binding__` 暴露、`permissions.query` 非原生代码……）。
+
+---
+
+## 7. 任务状态机
 
 ```
 pending ──start──▶ running ──┬──▶ success   （已回到主页，登录态已保存）
@@ -481,7 +546,7 @@ pending ──start──▶ running ──┬──▶ success   （已回到�
 
 ---
 
-## 7. 配置项
+## 8. 配置项
 
 `.env`（容器环境变量）与控制台「设置」页等价，控制台优先级更高。
 
@@ -492,6 +557,7 @@ pending ──start──▶ running ──┬──▶ success   （已回到�
 | `HOST_PORT` | `8080` | 宿主机端口 |
 | `SKYMAIL_BASE_URL` / `SKYMAIL_EMAIL` / `SKYMAIL_PASSWORD` | — | 收码账号 |
 | `MUSE_HEADLESS` | `true` | 无头模式 |
+| `MUSE_STEALTH` | `true` | 反检测：抹掉自动化特征 |
 | `MUSE_CONCURRENCY` | `1` | 并行任务数（每个任务一个独立 BrowserContext） |
 | `MUSE_BIRTHDAY_YEAR_MIN` / `MUSE_BIRTHDAY_YEAR_MAX` | `1995` / `2002` | 生日随机年份范围（不手填） |
 | `MUSE_EMAIL_DOMAIN` | 空 | 自动建邮箱用哪个域名；空则取 skymail 已有邮箱的域名 |
@@ -511,7 +577,7 @@ pending ──start──▶ running ──┬──▶ success   （已回到�
 
 ---
 
-## 8. 选择器失效了怎么办
+## 9. 选择器失效了怎么办
 
 muse.ai 改版时**不需要改代码**：在 `data/selectors.json` 里覆盖即可。
 
@@ -533,7 +599,7 @@ muse.ai 改版时**不需要改代码**：在 `data/selectors.json` 里覆盖即
 
 ---
 
-## 9. 故障排查
+## 10. 故障排查
 
 | 现象 | 排查 |
 |---|---|
@@ -551,10 +617,12 @@ muse.ai 改版时**不需要改代码**：在 `data/selectors.json` 里覆盖即
 | Resin 测试报「粘性异常」 | 同一个 Account 两次拿到不同 IP。检查 `resin_url` 里的 Token 是否正确、Platform 是否写错 |
 | 所有请求都失败且日志提示 Account | Resin 已启用但拿不到身份。确认任务邮箱已生成，或 skymail 登录邮箱已填 |
 | 想临时绕过 Resin 排查 | 设置页取消勾选「启用 Resin」→ 保存，所有请求改直连 |
+| 页面渲染异常 / 元素找不到 | 先试关掉「反检测」确认是不是 stealth 脚本引起的。`python tools/probe_stealth.py` 可单独验证 |
+| `__museHelpers is undefined` | stealth 脚本把 Playwright 的 init script 机制弄坏了。检查 `app/stealth.py` 里删 `__pwInitScripts` 的时机，必须在 DOMContentLoaded 之后 |
 
 ---
 
-## 10. 目录结构
+## 11. 目录结构
 
 ```
 .
@@ -562,7 +630,8 @@ muse.ai 改版时**不需要改代码**：在 `data/selectors.json` 里覆盖即
 │   ├── main.py          FastAPI 路由 + WebSocket + 静态托管
 │   ├── runner.py        TaskRuntime（流程对外接口）/ TaskRunner（并发调度）
 │   ├── muse_flow.py     muse.ai 全流程（注册资料 + 支付表单 + 等待验证完成）
-│   ├── browser.py       Playwright Browser 生命周期 + stealth + 正代注入
+│   ├── browser.py       Playwright Browser 生命周期 + 启动参数 + 正代注入
+│   ├── stealth.py       反检测：启动参数与页面注入脚本（值从同一大版本号派生）
 │   ├── resin.py         Resin 代理池（反代 URL / 正代凭据 / 身份上下文）
 │   ├── skymail.py       skymail API 客户端（经 Resin 反代）+ 验证码正则抽取
 │   ├── names.py         英文姓名池（100 名 / 100 姓）
@@ -576,6 +645,7 @@ muse.ai 改版时**不需要改代码**：在 `data/selectors.json` 里覆盖即
 ├── static/              控制台前端（index.html / app.js / style.css）
 ├── tools/
 │   ├── probe_muse.py    真实站点选择器探针
+│   ├── probe_stealth.py 反检测自测（40 项特征逐条比对）
 │   └── test_resin.py    Resin 接入自测（起假 Resin 服务跑断言）
 ├── scripts/             dev.sh / deploy.sh
 ├── data/                运行时数据（store.json、secret.key、sessions/、shots/）
@@ -585,7 +655,7 @@ muse.ai 改版时**不需要改代码**：在 `data/selectors.json` 里覆盖即
 
 ---
 
-## 11. 安全与合规须知
+## 12. 安全与合规须知
 
 - 控制台持有**支付卡信息**，请务必：设置强 `MUSE_CONSOLE_PASSWORD`、走 HTTPS、只在内网或 VPN 暴露、别把 8080 直接开到公网。
 - `MUSE_SECRET_KEY` 一定要显式设置并妥善保存；它丢了，已存卡片就解不开。
@@ -595,7 +665,7 @@ muse.ai 改版时**不需要改代码**：在 `data/selectors.json` 里覆盖即
 
 ---
 
-## 12. 已知限制
+## 13. 已知限制
 
 - **年龄验证依赖第三方结账页结构**，字段探测是启发式的（`autocomplete` / `name` / `id` / `placeholder` 多路匹配）。
   结账页大改时可能识别不到 → 任务会暂停，用实时画面人工完成。

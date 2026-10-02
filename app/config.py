@@ -59,6 +59,8 @@ DEFAULT_SETTINGS: dict = {
     # --- 浏览器 ---
     "headless": _bool("MUSE_HEADLESS", True),
     "slow_mo": _int("MUSE_SLOW_MO", 0),
+    # 反检测：抹掉自动化特征（启动参数 + 页面注入）
+    "stealth": _bool("MUSE_STEALTH", True),
     # 仅在未配置 Resin 时生效（Resin 优先级更高，见 app/resin.py）
     "proxy": os.getenv("MUSE_PROXY", ""),
     "locale": os.getenv("MUSE_LOCALE", "zh-CN"),

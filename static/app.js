@@ -593,6 +593,7 @@
   };
   const SETTING_CHECKS = {
     s_headless: 'headless',
+    s_stealth: 'stealth',
     s_auto_fill_card: 'auto_fill_card',
     s_stop_at_verification: 'stop_at_verification',
     s_manual_takeover: 'manual_takeover',
