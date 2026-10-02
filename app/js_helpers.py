@@ -250,6 +250,32 @@ HELPERS_JS = r"""
     return el.value === value;
   };
 
+  // 当前真正获得焦点的元素（穿透 shadow DOM）。
+  // 结账页在填完 CVV 后会把焦点自动移到邮编框，这时直接键盘输入即可，
+  // 多一次点击反而会把焦点移走。
+  const deepActive = () => {
+    let el = document.activeElement;
+    while (el && el.shadowRoot && el.shadowRoot.activeElement) {
+      el = el.shadowRoot.activeElement;
+    }
+    return el;
+  };
+
+  const focusedInfo = () => {
+    const el = deepActive();
+    if (!el) return { tag: '', value: '', type: '', name: '', placeholder: '', autocomplete: '' };
+    return {
+      tag: el.tagName || '',
+      type: (el.getAttribute('type') || 'text').toLowerCase(),
+      value: 'value' in el ? String(el.value || '') : '',
+      name: el.getAttribute('name') || el.id || '',
+      placeholder: el.getAttribute('placeholder') || '',
+      autocomplete: el.getAttribute('autocomplete') || '',
+    };
+  };
+
+  const focusedValue = () => focusedInfo().value;
+
   window.__museHelpers = {
     deepAll, visible, text, realClick, setValue,
     findByText, clickByText, clickOption, clickSelector,
@@ -257,6 +283,7 @@ HELPERS_JS = r"""
     clickablesIn, clickNthInRegion, clickCorner, listClickables, fillFirstInput,
     markSeen, clickNthNewInRegion, listNewInRegion,
     clickTextInRegion, listTextInRegion, clickTextNewInRegion,
+    deepActive, focusedInfo, focusedValue,
   };
 })();
 """

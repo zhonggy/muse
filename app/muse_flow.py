@@ -928,28 +928,123 @@ class MuseFlow:
             await put("exp", f'{card["exp_month"]}{card["exp_year"][-2:]}')
 
         await put("cvc", card["cvc"])
-
-        # 有些结账页在填完 CVV 之后才展开邮编等字段，所以再探一次
-        try:
-            again = await frame.evaluate(CARD_PROBE_JS, {})
-        except Exception:
-            again = None
-        if again and again.get("marked"):
-            marked = set(again["marked"])
-            await self.log(f"填完 CVV 后新增字段：{sorted(marked)}")
+        await self.page.wait_for_timeout(400)
 
         # 邮编：卡片自带的优先，否则用控制台配置的默认值
         postal = (card.get("postal") or "").strip() or str(
             self.rt.settings.get("checkout_postal") or ""
         ).strip()
-        if postal and await put("postal", postal):
-            await self.log(f"邮编已填入：{postal}")
+        if postal:
+            await self._fill_postal(frame, postal)
 
         await put("name", card.get("holder", ""))
         await put("address", (card.get("extra") or {}).get("address", ""))
         await put("city", (card.get("extra") or {}).get("city", ""))
         await put("state", (card.get("extra") or {}).get("state", ""))
         await self.log("支付表单已填写（卡号/CVV 不写入日志）")
+
+    # ------------------------------------------------------------------
+    # 邮编：填完 CVV 后焦点会自动跳过去，直接输即可
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _looks_like_postal(*fields: str) -> bool:
+        blob = " ".join(f or "" for f in fields).lower()
+        return any(k in blob for k in (
+            "postal", "zip", "邮编", "邮政编码", "郵遞區號", "邮递区号",
+        ))
+
+    async def _focused_input(self, page: Any) -> tuple[Any, dict]:
+        """跨 frame 找当前真正聚焦的输入框，返回 (frame, 描述)。"""
+        for f in page.frames:
+            try:
+                info = await f.evaluate("() => window.__museHelpers.focusedInfo()")
+            except Exception:
+                continue
+            if info and info.get("tag") in ("INPUT", "TEXTAREA"):
+                return f, info
+        return None, {}
+
+    async def _fill_postal(self, frame: Any, postal: str) -> None:
+        """填邮编。
+
+        实测：结账页在填完 CVV 后**会把焦点自动移到邮编输入框**。
+        这时直接敲键盘就行 —— 多一次点击反而会把焦点移走，
+        后面那串数字就不知道敲到哪去了。
+
+        所以顺序是：
+          1. 焦点已经落到邮编框 → 直接输
+          2. 否则重新探一次表单（字段可能是刚展开的）
+          3. 再不行才按属性找元素并点击后输入
+        """
+        page = frame.page
+
+        # --- 1. 焦点已自动跳过去 ---
+        focused_frame, info = await self._focused_input(page)
+        if focused_frame is not None and self._looks_like_postal(
+            info.get("autocomplete", ""),
+            info.get("name", ""),
+            info.get("placeholder", ""),
+        ):
+            try:
+                await page.keyboard.type(postal, delay=60)
+            except Exception as exc:
+                await self.log(f"直接输入邮编失败：{exc}", "warn")
+                return
+            got = ""
+            try:
+                got = str(
+                    await focused_frame.evaluate(
+                        "() => window.__museHelpers.focusedValue()"
+                    )
+                )
+            except Exception:
+                pass
+            await self.log(
+                f"填完 CVV 后焦点已自动跳到邮编框，直接输入 {postal}"
+                f"（回读 {got!r}）"
+            )
+            return
+
+        # --- 2. 重新探一次表单 ---
+        try:
+            again = await frame.evaluate(CARD_PROBE_JS, {})
+        except Exception:
+            again = None
+        re_marked = set((again or {}).get("marked") or [])
+        if "postal" in re_marked:
+            loc = frame.locator('[data-muse-fill="postal"]').first
+            try:
+                await loc.click(timeout=5000)
+            except Exception:
+                pass
+            try:
+                await loc.fill("", timeout=5000)
+            except Exception:
+                pass
+            try:
+                await loc.press_sequentially(postal, delay=60, timeout=10000)
+            except Exception as exc:
+                # 探针报了 postal 但元素实际不可用 —— 不能卡在这里
+                await self.log(f"重探定位的邮编框不可用（{exc}），转属性兜底", "warn")
+            else:
+                await self.log(f"邮编已填入：{postal}（重探后定位）")
+                return
+            return
+
+        # --- 3. 按常见属性兜底 ---
+        el = await self.locate("card_postal", timeout_ms=5000)
+        if el is not None:
+            await self.click_locator(el, "邮编框")
+            try:
+                await el.fill("")
+            except Exception:
+                pass
+            await el.press_sequentially(postal, delay=60)
+            await self.log(f"邮编已填入：{postal}（属性兜底定位）")
+            return
+
+        await self.log("没找到邮编输入框，跳过", "warn")
 
     async def _fill_split_expiry(self, frame: Any, card: dict, marked: set[str]) -> None:
         month = str(int(card["exp_month"]))
