@@ -1,0 +1,25 @@
+services:
+  muse-auto:
+    build: .
+    image: muse-auto:latest
+    container_name: muse-auto
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    env_file:
+      - .env
+    environment:
+      MUSE_DATA_DIR: /app/data
+      MUSE_HEADLESS: "true"
+      TZ: Asia/Shanghai
+    volumes:
+      - ./data:/app/data
+    # Chromium 需要足够的共享内存
+    shm_size: "1gb"
+    # 若用外部代理/多网卡，可放开下面两项
+    # network_mode: host
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,13 @@
+# 统一用 LF 入库，避免 Windows 上的 CRLF 弄坏 shell 脚本 / Dockerfile
+* text=auto eol=lf
+
+*.sh    text eol=lf
+*.py    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+Dockerfile text eol=lf
+
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.ico   binary
