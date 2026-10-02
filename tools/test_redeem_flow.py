@@ -82,6 +82,22 @@ async def main():
     await p.wait_for_timeout(500)
     ok.append(("进入完成界面", await ev("!!document.getElementById('done')")))
 
+    # 歧义场景：入口按钮和菜单项同名时，必须只数「新出现」的元素
+    print()
+    print("  --- 同名歧义：入口与菜单项都叫「设置」---")
+    await p.set_content(PAGE.replace('>gear<', '>设置<'))
+    await ev(f"{H}.markSeen('bottom-left')")
+    await ev(f"{H}.clickCorner('bottom-left')")
+    await p.wait_for_timeout(400)
+    before = await ev(f"{H}.listNewInRegion('bottom-left')")
+    r = await ev(f"{H}.clickTextInRegion('设置', 'bottom-left', true)")
+    ok.append(("（反例）区域内按文案会点回入口", r is True))
+    r2 = await ev(f"{H}.clickTextNewInRegion('设置', 'bottom-left', true)")
+    ok.append(("只在新增元素里按文案 -> 点到菜单项", r2 is True))
+    await p.wait_for_timeout(400)
+    ok.append(("弹窗出现", await ev("!!document.getElementById('modal')")))
+    print(f"      新增项 = {before}")
+
     print()
     for name, v in ok:
         print(f"  {'✓' if v else '✗'} {name}")

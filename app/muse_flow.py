@@ -707,14 +707,30 @@ class MuseFlow:
         nth: int = 0,
         only_new: bool = False,
     ) -> bool:
-        """先按文案点，再按「区域 + 序号」兜底。
+        """先在**该区域内**按文案点，再按序号/位置兜底。
 
-        muse 的 DOM 结构不稳定，左下角菜单、中间弹窗这些位置明确但文案不定，
-        所以两条路都留着。
+        为什么限定区域：弹出菜单里的「设置」与左下角那个入口按钮可能同叫
+        「设置」，全页搜索会点回入口本身，菜单根本展开不了。
+
+        顺序：区域（或区域新增）文案 → 全页文案 → 区域第 N 项 → 区域最靠角落。
         """
+        fn = "clickTextNewInRegion" if only_new else "clickTextInRegion"
+        for t in texts:
+            try:
+                ok = await self.page.evaluate(
+                    f"([l, r]) => window.__museHelpers.{fn}(l, r, true)",
+                    [t, region],
+                )
+            except Exception:
+                ok = False
+            if ok:
+                scope = f"{region} 区域{'新增' if only_new else ''}元素"
+                await self.log(f"已点击「{t}」（{label}，限定 {scope}）")
+                return True
+
         for t in texts:
             if await self._try_click(t, True):
-                await self.log(f"已点击「{t}」（{label}）")
+                await self.log(f"已点击「{t}」（{label}，全页兜底）")
                 return True
 
         if nth:
@@ -774,21 +790,35 @@ class MuseFlow:
         await self.wait_home()
         await self.rt.snap("home")
 
-        # 1) 左下角设置入口（先标记已有元素，供第 2 步数「新增项」用）
+        # 左下角设置入口。先不按文案点 —— 入口按钮可能也叫「设置」，
+        # 而它的位置（左下角）是确定的，按位置最稳。
         await self._mark_region("bottom-left")
-        if not await self._click_region(
-            "bottom-left", TEXTS["settings_entry"], "左下角设置按钮"
-        ):
+        ok_entry = False
+        try:
+            ok_entry = bool(await self.page.evaluate(
+                "() => window.__museHelpers.clickCorner('bottom-left')"
+            ))
+        except Exception:
+            ok_entry = False
+        if not ok_entry:
+            await self.log(
+                f"左下角没找到可点元素，可点列表：{await self._list_region('bottom-left')}",
+                "warn",
+            )
             raise FlowError("找不到左下角设置按钮")
+        await self.log("已点开左下角菜单")
         await self.page.wait_for_timeout(1500)
+        new_items = await self._list_new("bottom-left")
         await self.rt.snap("menu-open")
+        await self.log(f"菜单新出现的可点项：{new_items}")
 
-        # 2) 弹出菜单里的第 4 项 = 设置（只数点开后新出现的元素）
+        # 弹出菜单里的第 4 项 = 设置。
+        # 优先在「新出现」的元素里按文案找，找不到再按序号（第 4 项）。
         if not await self._click_region(
             "bottom-left", TEXTS["settings_menu"], "弹出菜单里的「设置」",
             nth=4, only_new=True,
         ):
-            raise FlowError("找不到弹出菜单里的「设置」")
+            raise FlowError(f"找不到弹出菜单里的「设置」（新出现项：{new_items}）")
         await self.page.wait_for_timeout(1800)
         await self.rt.snap("settings-panel")
 
@@ -824,12 +854,32 @@ class MuseFlow:
         await self.log(f"邀请码已填入：{code}")
         await self.rt.snap("invite-filled")
 
-        # 5) 确定
+        # 5) 确定，并确认新界面真的出来了
         if not await self._click_region("center", TEXTS["confirm"], "「确定」"):
             raise FlowError("找不到确定按钮")
-        await self.page.wait_for_timeout(3000)
+        await self._wait_invite_done()
         await self.rt.snap("invite-done")
         await self.log("邀请码兑现流程已走完", "success")
+
+    async def _wait_invite_done(self, timeout_s: int = 30) -> None:
+        """等「确定」后的新界面出现。
+
+        判据：中间区域不再有「兑现/兑换」类的按钮 —— 换成新界面后原来的
+        兑换入口就消失了。不依赖任何具体成功提示文案。
+        """
+        for _ in range(timeout_s * 2):
+            await self.check()
+            try:
+                texts = await self.page.evaluate(
+                    "(r) => window.__museHelpers.listClickables(r)", "center"
+                ) or []
+            except Exception:
+                texts = []
+            if not any(("兑现" in t or "兑换" in t) for t in texts):
+                await self.log("兑现界面已关闭，任务完成")
+                return
+            await asyncio.sleep(0.5)
+        await self.log("没等到兑现界面关闭，但不再阻塞流程", "warn")
 
     # ------------------------------------------------------------------
     # 支付表单

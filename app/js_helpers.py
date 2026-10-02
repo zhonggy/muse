@@ -211,6 +211,28 @@ HELPERS_JS = r"""
     return best ? realClick(best) : false;
   };
 
+  // 只在该区域内按文案点。
+  // 为什么需要：弹出菜单里的「设置」与左下角入口可能同叫「设置」，
+  // 全页搜索会点回入口本身。
+  const clickTextInRegion = (label, region, exact) => {
+    const els = clickablesIn(region);
+    let hit = els.find((e) => text(e) === label);
+    if (!hit && exact === false) hit = els.find((e) => text(e).includes(label));
+    return hit ? realClick(hit) : false;
+  };
+
+  // 区域 + 只在「新出现」的元素里按文案找。
+  // 这是最严的组合：左下角入口和菜单项同名时，只能靠「新出现」区分。
+  const clickTextNewInRegion = (label, region, exact) => {
+    const els = clickablesIn(region).filter((e) => !e.hasAttribute('data-muse-seen'));
+    let hit = els.find((e) => text(e) === label);
+    if (!hit && exact === false) hit = els.find((e) => text(e).includes(label));
+    return hit ? realClick(hit) : false;
+  };
+
+  const listTextInRegion = (region) =>
+    clickablesIn(region).map((e) => text(e).slice(0, 40));
+
   const listClickables = (region) =>
     clickablesIn(region).map((e) => text(e).slice(0, 40));
 
@@ -234,6 +256,7 @@ HELPERS_JS = r"""
     comboboxLabels, describe,
     clickablesIn, clickNthInRegion, clickCorner, listClickables, fillFirstInput,
     markSeen, clickNthNewInRegion, listNewInRegion,
+    clickTextInRegion, listTextInRegion, clickTextNewInRegion,
   };
 })();
 """
