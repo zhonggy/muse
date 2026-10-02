@@ -65,8 +65,6 @@ DEFAULT_SETTINGS: dict = {
     "stop_at_verification": _bool("MUSE_STOP_AT_VERIFICATION", False),
     "auto_fill_card": _bool("MUSE_AUTO_FILL_CARD", True),
     "manual_takeover": _bool("MUSE_MANUAL_TAKEOVER", True),  # 允许控制台点击接管
-    "retry_times": _int("MUSE_RETRY_TIMES", 1),
-    "record_video": _bool("MUSE_RECORD_VIDEO", False),
 }
 
 #: 控制台鉴权（留空则不需要登录）

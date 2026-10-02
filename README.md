@@ -31,37 +31,227 @@
 
 ---
 
-## 2. 快速开始（Docker，推荐）
+## 2. 快速开始（服务器部署）
+
+### 2.1 前置条件
+
+| 项 | 要求 |
+|---|---|
+| 系统 | Linux（Ubuntu 20.04+ / Debian 11+ 实测可用），Windows 请用 WSL2 |
+| Docker | 20.10+，且带 `docker compose` v2 插件（`docker compose version` 能跑通） |
+| 内存 | ≥ 2 GB。Chromium 每个并发实例约占 300–500 MB，`MUSE_CONCURRENCY=3` 建议 ≥ 4 GB |
+| 磁盘 | ≥ 2 GB（镜像内含 Chromium 及中文字体） |
+| 网络 | 服务器需能直连 `muse.ai` 与 `skymail.ink` |
+| 账号 | 一个 [skymail.ink](https://skymail.ink) 账号，用于收验证码 |
+
+还没装 Docker 的话（Ubuntu / Debian 一行搞定）：
 
 ```bash
-git clone <repo> muse && cd muse
-cp .env.example .env      # 至少改 MUSE_CONSOLE_PASSWORD
-bash scripts/deploy.sh    # 自动生成密码/密钥 → build → up
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER   # 重新登录后生效，之后不用再加 sudo
+docker compose version          # 确认 v2 插件存在
 ```
 
-打开 `http://<服务器IP>:8080/`，用 `.env` 里的 `MUSE_CONSOLE_USER / MUSE_CONSOLE_PASSWORD` 登录。
-
-> `scripts/deploy.sh` 会在 `.env` 不存在时自动生成一份随机控制台密码和 Fernet 密钥，并把密码打印在终端。
-
-手动方式：
+### 2.2 拉代码
 
 ```bash
+git clone https://github.com/zhonggy/muse.git
+cd muse
+```
+
+### 2.3 一键部署
+
+```bash
+bash scripts/deploy.sh
+```
+
+脚本依次做五件事：
+
+1. 检查 `docker` 与 `docker compose`（v2 插件）是否可用
+2. 若 `.env` 不存在 → 从 `.env.example` 生成，写入**随机控制台密码**与**随机 Fernet 加密密钥**，并 `chmod 600`
+3. `mkdir -p data`（挂载给容器的持久化目录）
+4. `docker compose build` → `docker compose up -d`
+5. 轮询 `/healthz` 等容器就绪（最多 60s），并打印访问地址与密码
+
+首次 build 约 3–6 分钟（要装 Playwright 依赖 + 下载 Chromium）。
+
+跑完会看到：
+
+```
+===================================================
+ 控制台地址： http://10.0.0.12:8080/
+ 登录账号：   admin
+ 登录密码：   Xk9mQ2vT7pLn4bRz
+ （已写入 .env，chmod 600）
+===================================================
+
+下一步：打开控制台 → 「设置」页配 skymail 账号 → 点「测试连接」
+查看日志： docker compose logs -f
+```
+
+> 想自己定密码 / 密钥？在跑脚本**之前**手动 `cp .env.example .env` 并改好，脚本就不会覆盖它。
+
+### 2.4 确认服务起来了
+
+```bash
+docker compose ps
+```
+
+```
+NAME        IMAGE            STATUS
+muse-auto   muse-auto:latest running (healthy)
+```
+
+```bash
+curl -s localhost:8080/healthz
+```
+
+```json
+{"ok":true,"ts":1790914874.85,"browser":false}
+```
+
+`"browser":false` 是**正常的** —— Chromium 要到第一次跑任务时才启动，不是启动即拉起。
+
+```bash
+docker compose logs -f      # 看启动日志，Ctrl+C 退出（不影响容器）
+```
+
+### 2.5 打开控制台
+
+浏览器访问 `http://<服务器IP>:8080/`，输入 `.env` 里的 `MUSE_CONSOLE_USER` / `MUSE_CONSOLE_PASSWORD`。
+
+右上角出现绿色 **「已连接」** = WebSocket 通了。若一直是「未连接」，见[第 8 节](#8-故障排查)（多半是反向代理没转发 WebSocket 头）。
+
+### 2.6 首次配置（三件事）
+
+**① 配 skymail 收码** —— 「设置」页 → 「skymail 收码」
+
+| 字段 | 填什么 |
+|---|---|
+| API 地址 | 保持 `https://skymail.ink` |
+| 登录邮箱 / 密码 | 你的 skymail **主账号**（就是能登录 skymail 网页后台那个） |
+| 验证码超时 | 默认 240s，够用 |
+
+填完点 **「测试连接」**，期望看到：
+
+```
+✓ admin，可见邮箱 3 个：user1@example.com, user2@example.com, ...
+```
+
+看到邮箱列表 = 收码链路通了。看不到目标邮箱也不用管，跑任务时会自动 `POST /api/account/add` 把它加进来。
+
+**② 录入支付卡** —— 「卡片」页
+
+填卡号 / 有效期月年 / CVV / 持卡人 / 邮编 → 「保存卡片」。
+保存后列表只显示 `************4242` 这样的脱敏卡号；卡号与 CVV 用 Fernet 加密写进 `data/store.json`。
+
+> 只想到验证页为止、暂不绑卡？跳过这步，并在「设置」里勾上 **「到年龄验证页即停止」**。
+
+**③ 建第一个任务** —— 「任务」页
+
+```
+邮箱列表（每行一个）        生日          支付卡
+user1@example.com             1996-07-22    不绑卡（到验证页暂停）
+```
+
+点「创建任务」（勾了「创建后立即开始」就会直接跑）。右侧实时画面每 1.5s 刷新一帧，日志会逐条打印：
+
+```
+[step] ▶ 打开站点
+[info] 已打开 https://muse.ai/（标题：Muse — Your Personal AI Agent）
+[step] ▶ 展开登录表单
+[info] 邮箱输入框已可见，跳过展开步骤
+[step] ▶ 填写邮箱
+[info] skymail 邮箱已就绪：accountId=12，基线邮件 3 封
+[info] 邮箱已填入：user1@example.com
+[step] ▶ 提交邮箱并等待验证码
+[info] 已点击「继续」
+[info] 已进入验证码界面，开始轮询 skymail 收件箱
+[info] 收到邮件：「你的 Muse 验证码」（2026-10-01 12:03:11）
+[info] 取到验证码：063209（按字符串写入，保留前导零）
+...
+[step] ▶ 年龄验证
+[info] 配置为「到年龄验证即停止」，保存登录态后结束
+[success] 年龄验证流程结束，登录态已保存
+```
+
+> **建议第一次就这么跑**：一个邮箱 + 「到年龄验证页即停止」。
+> 只要日志能走到 `▶ 年龄验证`，说明前 8 步全通了；确认没问题再放开绑卡、上批量。
+
+登录态会落到 `data/sessions/<task_id>.json`，可在「设置」页底部下载。
+
+### 2.7 反向代理 + HTTPS（公网部署必做）
+
+控制台持有支付卡信息，**不要**把 8080 直接暴露到公网。用 Nginx 挡一层：
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name muse.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/muse.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/muse.example.com/privkey.pem;
+
+    location / {
+        proxy_pass         http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade    $http_upgrade;   # ← 这两行缺了 WebSocket 会一直「未连接」
+        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Host       $host;
+        proxy_set_header   X-Real-IP  $remote_addr;
+        proxy_read_timeout 3600s;                      # 长连接别被 60s 掐断
+    }
+}
+```
+
+配合 `docker-compose.yml` 里把端口改成只监听本机：`127.0.0.1:8080:8080`。
+
+证书用 certbot：`sudo certbot --nginx -d muse.example.com`。
+
+### 2.8 日常运维
+
+| 操作 | 命令 |
+|---|---|
+| 看日志 | `docker compose logs -f --tail=200` |
+| 重启 | `docker compose restart` |
+| 停止 | `docker compose down` |
+| 停止并删镜像 | `docker compose down --rmi local` |
+| 改代码后重建 | `git pull && docker compose up -d --build` |
+| 进容器排查 | `docker compose exec muse-auto bash` |
+| 备份数据 | `tar czf muse-backup-$(date +%F).tgz data/ .env` |
+| 恢复数据 | `tar xzf muse-backup-YYYY-MM-DD.tgz` |
+
+**数据都在 `./data/` 里**，容器重建不丢：
+
+```
+data/
+├── store.json    设置 / 卡片（加密）/ 任务记录
+├── secret.key    卡片加密密钥（设了 MUSE_SECRET_KEY 就不会用这个）
+├── sessions/     每个任务的登录态 storage_state
+└── shots/        关键步骤截图
+```
+
+> ⚠️ `data/secret.key` 丢了，已存卡片就解不开了。生产环境请在 `.env` 里显式设 `MUSE_SECRET_KEY` 并单独备份它。
+
+### 2.9 手动部署（不想用脚本）
+
+```bash
+cp .env.example .env
+# 生成密钥：
+python3 -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"
+# 把输出填进 .env 的 MUSE_SECRET_KEY，并改掉 MUSE_CONSOLE_PASSWORD
+
+mkdir -p data
 docker compose build
 docker compose up -d
 docker compose logs -f
 ```
 
-### 反向代理 + HTTPS（可选但强烈建议）
+### 2.10 卸载
 
-```nginx
-location / {
-    proxy_pass         http://127.0.0.1:8080;
-    proxy_http_version 1.1;
-    proxy_set_header   Upgrade $http_upgrade;     # WebSocket
-    proxy_set_header   Connection "upgrade";
-    proxy_set_header   Host $host;
-    proxy_read_timeout 3600s;
-}
+```bash
+docker compose down --rmi local -v
+cd .. && rm -rf muse          # ⚠️ 会一并删掉 data/，先备份
 ```
 
 ---
@@ -84,63 +274,82 @@ python tools/probe_muse.py
 
 ---
 
-## 4. 控制台使用
+## 4. 控制台功能详解
 
-### 4.1 设置（首次必做）
+> 第一次上手怎么点，看 [2.6 首次配置](#26-首次配置三件事)；这一节只讲各项功能本身。
 
-「设置」页 → **skymail 收码**：
+### 4.1 「设置」页
 
-| 字段 | 说明 |
-|---|---|
-| API 地址 | 默认 `https://skymail.ink` |
-| 登录邮箱 / 密码 | skymail 主账号（`POST /api/login`） |
-| 验证码超时 | 默认 240s |
-| 轮询间隔 | 默认 3s |
+**skymail 收码**
 
-点「测试连接」会调用 `/api/my/loginUserInfo` + `/api/account/list`，返回可见邮箱列表。
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| API 地址 | `https://skymail.ink` | 自建实例可换 |
+| 登录邮箱 / 密码 | — | skymail **主账号**（不是被注册的那个邮箱） |
+| 验证码超时 | 240s | 超过就判失败 |
+| 轮询间隔 | 3s | 每轮拉 8 封最新邮件 |
 
-**收码逻辑**：先用 `/api/account/list` 找到目标邮箱对应的 `accountId`，找不到就 `POST /api/account/add`
-把它加进来；然后以 `/api/email/list?accountId=..` 增量轮询（用 `emailId` 做游标），
-从 `subject / text / content` 里抽 6 位数字。若账号是管理员，还会退回 `/api/allEmail/list?accountEmail=..`。
+「测试连接」调 `GET /api/my/loginUserInfo` + `GET /api/account/list`，返回可见邮箱列表。
 
-**浏览器与任务**页可以调：并发数、无头模式、代理、时区/语言、截图间隔、
-「到年龄验证即停止（不绑卡）」、「自动填写控制台保存的卡片」、「允许控制台点击接管」。
+收码链路分三段：
 
-### 4.2 卡片
+1. `GET /api/account/list` 找目标邮箱的 `accountId`；找不到就 `POST /api/account/add` 把它加进来
+2. 记下当前最新的 `emailId` 作为基线，再以 `GET /api/email/list?accountId=..` 增量轮询
+3. 从新邮件的 `subject / text / content` 里抽 6 位数字（保留前导零，关键词就近加权）
 
-「卡片」页录入卡号 / 有效期 / CVV / 持卡人 / 邮编。
+若账号有管理员权限，第 1 步失败时会退回 `GET /api/allEmail/list?accountEmail=..`。
 
-- 卡号与 CVV 用 **Fernet 对称加密**后写入 `data/store.json`
-- 密钥来自 `MUSE_SECRET_KEY`，未设置时自动生成 `data/secret.key`（**容器重建会丢，生产环境务必设 `MUSE_SECRET_KEY`**）
-- 所有 API 只返回脱敏卡号（`************4242`），日志里**永不出现完整卡号 / CVV**
+**浏览器与任务**
 
-### 4.3 创建任务
+| 项 | 默认 | 说明 |
+|---|---|---|
+| 并发数 | 1 | 同时跑几个任务；每个任务一个独立 `BrowserContext`。建议 ≤ 3 |
+| 无头模式 | 开 | 服务器上保持开启 |
+| 截图间隔 | 1.5s | 实时画面帧率，调大省带宽 |
+| 单步超时 | 60s | 单个页面操作的等待上限 |
+| 到年龄验证页即停止 | 关 | 勾上则不绑卡，跑到验证页就保存登录态收工 |
+| 自动填写已保存的卡片 | 开 | 关掉则每次都在控制台弹窗手动给卡 |
+| 允许控制台点击接管 | 开 | 关掉则实时画面变只读 |
+| 代理 / 时区 / 语言 | — | 直接透传给浏览器上下文 |
 
-「任务」页：
+### 4.2 「卡片」页
+
+录入卡号 / 有效期月年 / CVV / 持卡人 / 邮编。
+
+- 卡号与 CVV 用 **Fernet 对称加密**后写进 `data/store.json`，其他字段明文
+- 密钥优先取 `MUSE_SECRET_KEY`，没有才用 `data/secret.key`
+- 所有 API 只返回脱敏卡号（`************4244`）
+- 任务日志里**永不出现完整卡号 / CVV**
+
+### 4.3 「任务」页
 
 ```
 邮箱列表（每行一个）      生日        支付卡
-user1@example.com          1996-07-22  主力卡 ****4242
+user1@example.com          1996-07-22  主力卡 ****4244
 user2@example.com                      自动轮换
 ```
 
-- 支付卡选「不绑卡」→ 任务跑到年龄验证页会**暂停**，控制台弹窗让你现场提供卡
+- 邮箱可以用换行、逗号或空格分隔，自动去重
+- 支付卡选「不绑卡」→ 跑到年龄验证页会**暂停**，控制台弹窗让你现场给卡
 - 选「自动轮换」→ 多张卡按邮箱顺序轮流分配
-- 勾选「创建后立即开始」则建完就跑
 
-任务列表里每条都能 **开始 / 停止 / 重试 / 删除**；顶部有 **全部开始 / 全部停止 / 清理已完成 / 导出 CSV·JSON**。
+每条任务可 **开始 / 停止 / 重试 / 删除**；顶部有 **全部开始 / 全部停止 / 清理已完成 / 导出 CSV·JSON**。
+导出字段：`email, status, step, code, account_created, reached_verification, session_file, error, attempts, started_at, finished_at`。
 
 ### 4.4 实时画面 + 人工接管
 
-右侧「实时画面」按 `MUSE_SCREENSHOT_INTERVAL`（默认 1.5s）推送 JPEG：
+右侧「实时画面」按 `MUSE_SCREENSHOT_INTERVAL` 推送 JPEG：
 
-- **直接在画面上点击** → 坐标换算后注入浏览器真实鼠标点击
-- **画面获得焦点后敲键盘** → 透传 `Enter / Tab / Esc / 方向键 / 普通字符`
+- **直接在画面上点击** → 坐标按缩放比例换算后注入浏览器真实鼠标点击
+- **画面获得焦点后敲键盘** → 透传 `Enter / Tab / Esc / 方向键 / Backspace / 普通字符`
 - 输入框打字 → 「发送文本」把整段文字打进当前焦点元素
 - `↑ / ↓` 滚动页面
 
-遇到 **3DS / 短信验证码 / 银行验证** 时任务会自动暂停并提示，
+遇到 **3DS / 短信验证码 / 银行验证** 时任务会自动暂停（`needs=manual`），
 你在实时画面上手点完成后，点「我已完成人工操作」继续。
+
+> 需要关闭这个能力时，在「设置」里取消勾选「允许控制台点击接管」，
+> 后端会拒绝所有来自 WebSocket 的点击 / 按键 / 输入指令。
 
 ---
 

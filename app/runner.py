@@ -460,12 +460,23 @@ class TaskRunner:
         rt.manual_done()
         return True
 
-    async def send_click(self, task_id: str, x: float, y: float,
-                         double: bool = False) -> bool:
+    # ------------------------------------------------------------------
+    # 实时接管（受 manual_takeover 开关控制）
+    # ------------------------------------------------------------------
+
+    def _takeover_page(self, task_id: str) -> Page | None:
+        if not self.settings.get("manual_takeover", True):
+            return None
         rt = self._runtimes.get(task_id)
         if not rt or not rt.page:
+            return None
+        return rt.active_page
+
+    async def send_click(self, task_id: str, x: float, y: float,
+                         double: bool = False) -> bool:
+        page = self._takeover_page(task_id)
+        if page is None:
             return False
-        page = rt.active_page
         try:
             await page.mouse.click(x, y, click_count=2 if double else 1)
             return True
@@ -473,31 +484,31 @@ class TaskRunner:
             return False
 
     async def send_key(self, task_id: str, key: str) -> bool:
-        rt = self._runtimes.get(task_id)
-        if not rt or not rt.page:
+        page = self._takeover_page(task_id)
+        if page is None:
             return False
         try:
-            await rt.active_page.keyboard.press(key)
+            await page.keyboard.press(key)
             return True
         except Exception:
             return False
 
     async def send_type(self, task_id: str, text: str) -> bool:
-        rt = self._runtimes.get(task_id)
-        if not rt or not rt.page:
+        page = self._takeover_page(task_id)
+        if page is None:
             return False
         try:
-            await rt.active_page.keyboard.type(text, delay=40)
+            await page.keyboard.type(text, delay=40)
             return True
         except Exception:
             return False
 
     async def send_scroll(self, task_id: str, dy: int) -> bool:
-        rt = self._runtimes.get(task_id)
-        if not rt or not rt.page:
+        page = self._takeover_page(task_id)
+        if page is None:
             return False
         try:
-            await rt.active_page.mouse.wheel(0, dy)
+            await page.mouse.wheel(0, dy)
             return True
         except Exception:
             return False
