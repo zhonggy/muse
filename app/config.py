@@ -82,7 +82,9 @@ DEFAULT_SETTINGS: dict = {
     "locale": os.getenv("MUSE_LOCALE", "zh-CN"),
     "timezone": os.getenv("MUSE_TIMEZONE", "Asia/Shanghai"),
     "viewport_w": _int("MUSE_VIEWPORT_W", 1280),
-    "viewport_h": _int("MUSE_VIEWPORT_H", 820),
+    # 不要用 820：Camoufox 生成的屏幕地板是 1366x768（MODERN_SCREEN_FLOOR），
+    # 窗口比屏幕还高是不可能组合，会直接暴露。720 是常见笔记本尺寸。
+    "viewport_h": _int("MUSE_VIEWPORT_H", 720),
     "muse_url": os.getenv("MUSE_URL", "https://muse.ai/"),
     "user_agent": os.getenv("MUSE_USER_AGENT", ""),
 

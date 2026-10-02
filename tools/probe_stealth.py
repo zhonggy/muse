@@ -149,6 +149,10 @@ async def main() -> int:
 
     print("-" * 98)
     print(f"不通过 {bad} / {len(rows)}")
+    if bad:
+        # 单独列一行，方便日志里直接 grep 到失败项
+        names = [r["key"] for r in rows if _verdict(r["value"], str(r["expect"]))]
+        print("失败项：" + " | ".join(names))
 
     await ctx.close()
     await browser_mod.manager.stop()
