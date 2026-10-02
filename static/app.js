@@ -73,28 +73,44 @@
     return `${proto}://${location.host}/ws${q}`;
   }
 
-  function connect() {
-    let ws;
-    try { ws = new WebSocket(wsUrl()); } catch (e) { setTimeout(connect, 2500); return; }
-    state.ws = ws;
+  async function ensureToken() {
+    if (state.wsToken) return state.wsToken;
+    try {
+      const t = await api('GET', '/api/ws-token');
+      state.wsToken = t.token || '';
+    } catch (_) {
+      // 取不到就保持空，靠浏览器缓存的 Basic 凭据
+    }
+    return state.wsToken;
+  }
 
-    ws.onopen = () => {
-      state.wsOk = true;
-      $('conn').textContent = '已连接';
-      $('conn').className = 'pill on';
-    };
-    ws.onclose = () => {
-      state.wsOk = false;
-      $('conn').textContent = '未连接';
-      $('conn').className = 'pill off';
-      setTimeout(connect, 2000);
-    };
-    ws.onerror = () => { try { ws.close(); } catch (_) {} };
-    ws.onmessage = (ev) => {
-      let msg;
-      try { msg = JSON.parse(ev.data); } catch (_) { return; }
-      handle(msg);
-    };
+  function connect() {
+    // 每次重连都重新确认 token：容器重启后 wsToken 可能是空的
+    ensureToken().then(() => {
+      let ws;
+      try { ws = new WebSocket(wsUrl()); } catch (e) { setTimeout(connect, 2500); return; }
+      state.ws = ws;
+
+      ws.onopen = () => {
+        state.wsOk = true;
+        $('conn').textContent = '已连接';
+        $('conn').className = 'pill on';
+      };
+      ws.onclose = (ev) => {
+        state.wsOk = false;
+        $('conn').textContent = '未连接';
+        $('conn').className = 'pill off';
+        // 4401 = 鉴权失败，下次重连前重新取 token
+        if (ev && ev.code === 4401) state.wsToken = '';
+        setTimeout(connect, 2000);
+      };
+      ws.onerror = () => { try { ws.close(); } catch (_) {} };
+      ws.onmessage = (ev) => {
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch (_) { return; }
+        handle(msg);
+      };
+    });
   }
 
   function wsSend(payload) {
@@ -702,9 +718,8 @@
     }));
 
     try {
-      const t = await api('GET', '/api/ws-token');
-      state.wsToken = t.token || '';
-    } catch (_) { state.wsToken = ''; }
+      await ensureToken();
+    } catch (_) { /* ignore */ }
 
     try { await reload(); } catch (e) { toast('加载状态失败：' + e.message, 'err'); }
     connect();

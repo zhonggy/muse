@@ -532,6 +532,9 @@ async def ws_endpoint(ws: WebSocket) -> None:
             ).decode()
             ok = secrets.compare_digest(token, expected)
         if not ok:
+            # 先 accept 再以 4401 关闭，客户端才能拿到关闭码并重取 token；
+            # 直接 close 会变成 HTTP 403，前端无法区分“鉴权失败”和“服务没起来”
+            await ws.accept()
             await ws.close(code=4401)
             return
     await ws.accept()
