@@ -57,9 +57,19 @@ DEFAULT_SETTINGS: dict = {
     "resin_enabled": _bool("RESIN_ENABLED", True),
 
     # --- 浏览器 ---
+    # camoufox（基于 Firefox 的反检测内核）| chromium（Playwright 自带）
+    "browser_engine": os.getenv("MUSE_BROWSER_ENGINE", "camoufox"),
+    # Camoufox 伪造的目标系统：windows / macos / linux
+    "camoufox_os": os.getenv("MUSE_CAMOUFOX_OS", "windows"),
+    # 鼠标轨迹人性化（对抗行为检测）
+    "camoufox_humanize": _bool("MUSE_CAMOUFOX_HUMANIZE", True),
+    # 按代理出口 IP 推导时区/地理位置（让时区与 IP 自洽）
+    "camoufox_geoip": _bool("MUSE_CAMOUFOX_GEOIP", True),
+    # 空 = 原生 headless；virtual = Linux 上用 Xvfb 跑真实渲染
+    "camoufox_headless_mode": os.getenv("MUSE_CAMOUFOX_HEADLESS_MODE", ""),
     "headless": _bool("MUSE_HEADLESS", True),
     "slow_mo": _int("MUSE_SLOW_MO", 0),
-    # 反检测：抹掉自动化特征（启动参数 + 页面注入）
+    # 反检测：仅对 chromium 内核生效（camoufox 在浏览器层自己处理）
     "stealth": _bool("MUSE_STEALTH", True),
     # 仅在未配置 Resin 时生效（Resin 优先级更高，见 app/resin.py）
     "proxy": os.getenv("MUSE_PROXY", ""),

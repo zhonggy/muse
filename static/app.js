@@ -583,6 +583,8 @@
     s_code_timeout: 'code_timeout',
     s_code_poll_interval: 'code_poll_interval',
     s_muse_url: 'muse_url',
+    s_browser_engine: 'browser_engine',
+    s_camoufox_os: 'camoufox_os',
     s_default_card_id: 'default_card_id',
     s_concurrency: 'concurrency',
     s_screenshot_interval: 'screenshot_interval',
@@ -594,6 +596,8 @@
   const SETTING_CHECKS = {
     s_headless: 'headless',
     s_stealth: 'stealth',
+    s_camoufox_humanize: 'camoufox_humanize',
+    s_camoufox_geoip: 'camoufox_geoip',
     s_auto_fill_card: 'auto_fill_card',
     s_stop_at_verification: 'stop_at_verification',
     s_manual_takeover: 'manual_takeover',

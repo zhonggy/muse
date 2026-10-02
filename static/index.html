@@ -150,6 +150,17 @@
       <h3>浏览器与任务</h3>
       <div class="grid3">
         <label class="fld"><span>muse 地址</span><input id="s_muse_url"></label>
+        <label class="fld"><span>浏览器内核</span>
+          <select id="s_browser_engine">
+            <option value="camoufox">Camoufox（Firefox 152 反检测内核，推荐）</option>
+            <option value="chromium">Chromium（Playwright 自带 + JS 层伪装）</option>
+          </select></label>
+        <label class="fld"><span>Camoufox 伪造系统</span>
+          <select id="s_camoufox_os">
+            <option value="windows">windows</option>
+            <option value="macos">macos</option>
+            <option value="linux">linux</option>
+          </select></label>
         <label class="fld"><span>默认卡片</span><select id="s_default_card_id"></select></label>
         <label class="fld"><span>并发数</span><input id="s_concurrency" type="number" min="1" max="8"></label>
         <label class="fld"><span>截图间隔（秒）</span><input id="s_screenshot_interval" type="number" step="0.5"></label>
@@ -160,7 +171,9 @@
       </div>
       <div class="checks">
         <label class="chk"><input type="checkbox" id="s_headless"> 无头模式（服务器上一般保持勾选）</label>
-        <label class="chk"><input type="checkbox" id="s_stealth"> 反检测：抹掉自动化特征（webdriver / window.chrome / plugins / WebGL 软渲染等）</label>
+        <label class="chk"><input type="checkbox" id="s_camoufox_humanize"> Camoufox：鼠标轨迹人性化（对抗行为检测）</label>
+        <label class="chk"><input type="checkbox" id="s_camoufox_geoip"> Camoufox：按代理出口 IP 推导时区（让时区与 IP 自洽）</label>
+        <label class="chk"><input type="checkbox" id="s_stealth"> 反检测 JS 层伪装（<b>仅 Chromium 内核生效</b>；Camoufox 在浏览器层自己处理）</label>
         <label class="chk"><input type="checkbox" id="s_auto_fill_card"> 自动填写控制台保存的卡片</label>
         <label class="chk"><input type="checkbox" id="s_stop_at_verification"> 到年龄验证页即停止（不绑卡）</label>
         <label class="chk"><input type="checkbox" id="s_manual_takeover"> 允许控制台点击接管</label>

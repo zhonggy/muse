@@ -14,15 +14,24 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Playwright 系统依赖（中文字体用于截图里正确渲染中文）
+# curl/ca-certificates 给健康检查与下载用；中文字体让截图里中文正常渲染
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates fonts-noto-cjk fonts-liberation \
+        curl ca-certificates \
+        fonts-noto-cjk fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
+# 一次装齐两种内核：
+#   - camoufox（默认）：Firefox 152 反检测内核，靠 `camoufox fetch` 下载
+#   - chromium（备选）：`playwright install chromium`
+# `install-deps firefox` 装的是 Firefox 运行时依赖，Camoufox 同为 Firefox 构建，通用。
+# xvfb 供 camoufox 的 headless="virtual" 模式使用（真实渲染，比原生 headless 更难识别）。
 RUN pip install -r requirements.txt \
     && playwright install --with-deps chromium \
-    && rm -rf /var/lib/apt/lists/*
+    && playwright install-deps firefox \
+    && apt-get install -y --no-install-recommends xvfb \
+    && python -m camoufox fetch \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /root/.cache/pip
 
 COPY app ./app
 COPY static ./static

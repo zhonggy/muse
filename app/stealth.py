@@ -99,6 +99,41 @@ def _brands(major: str) -> list[dict[str, str]]:
     ]
 
 
+#: 清理 Playwright 注入到 window 上的全局键。
+#:
+#: **两种内核都要跑** —— 这些键是 Playwright 自己加的，跟浏览器内核无关，
+#: Camoufox 也不会帮你抹。
+#:
+#: 关键：**不能在 document-start 阶段删 __pwInitScripts**。Playwright 靠它注册
+#: 并注入所有 add_init_script 脚本，提前删掉会把 window.__museHelpers 一起弄没，
+#: 整个流程直接崩。所以是「先让它不可枚举，DOMContentLoaded 之后再删」。
+PLAYWRIGHT_CLEANUP_JS = r"""
+(() => {
+  const KEYS = [
+    '__playwright__binding__', '__pwInitScripts',
+    '__playwright', '__pw_manual', '__pwEventListeners',
+  ];
+  const hide = () => KEYS.forEach((k) => {
+    try {
+      const d = Object.getOwnPropertyDescriptor(window, k);
+      if (d && d.enumerable) Object.defineProperty(window, k, { enumerable: false });
+    } catch (e) {}
+  });
+  const wipe = () => KEYS.forEach((k) => {
+    try { delete window[k]; } catch (e) {}
+  });
+
+  hide();
+  const later = () => { hide(); setTimeout(wipe, 0); };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', later, { once: true });
+  } else {
+    later();
+  }
+})();
+"""
+
+
 def build_stealth_js(major: str) -> str:
     """生成注入脚本。所有值都从 major 派生，保证自洽。"""
     cfg = {
@@ -182,15 +217,24 @@ _STEALTH_JS = r"""
 
   // =====================================================================
   // 1. navigator.webdriver
-  //    Chrome 把它放在 Navigator.prototype 上。只在实例上 defineProperty
-  //    不够 —— 原型上还留着一个可枚举的 getter，描述符一查就露。
-  //    先尝试彻底 delete，删不掉再退化成返回 undefined 的 getter。
+  //    真实 Chrome 是 Navigator.prototype 上一个**返回 false 的 getter**
+  //    （WebIDL 属性，enumerable/configurable 都是 true）。
+  //    把它 delete 成 undefined 反而不像真 Chrome —— 检测器只要对比
+  //    「同一浏览器未自动化时的形状」就能看出。
+  //    真正让它是 true 的是 Playwright 默认加的 --enable-automation，
+  //    那个已经在启动参数里剔掉了，这里只需保证形状与值都对。
   // =====================================================================
-  safe(() => { delete Navigator.prototype.webdriver; });
-  if ('webdriver' in Navigator.prototype) {
-    defineGetter(Navigator.prototype, 'webdriver', function () { return undefined; });
-  }
-  safe(() => { delete Object.getPrototypeOf(navigator).webdriver; });
+  safe(() => {
+    const proto = Navigator.prototype;
+    const d = Object.getOwnPropertyDescriptor(proto, 'webdriver');
+    if (!d || d.get) {
+      Object.defineProperty(proto, 'webdriver', {
+        get: markNative(function webdriver() { return false; }, 'webdriver'),
+        configurable: true,
+        enumerable: true,
+      });
+    }
+  });
 
   // =====================================================================
   // 2. window.chrome —— headless 下是个空壳，正常 Chrome 有这些
