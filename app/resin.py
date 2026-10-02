@@ -269,11 +269,11 @@ async def probe(config: ResinConfig, account: str, mode: str = "reverse") -> dic
     target = "https://api.ipify.org/?format=json"
     if mode == "forward":
         async with httpx.AsyncClient(
-            proxy=config.forward_proxy_url(account), timeout=25.0
+            proxy=config.forward_proxy_url(account), timeout=12.0
         ) as client:
             resp = await client.get(target)
     else:
-        async with httpx.AsyncClient(timeout=25.0) as client:
+        async with httpx.AsyncClient(timeout=12.0) as client:
             resp = await client.get(
                 config.reverse_url(target), headers=config.account_header(account)
             )

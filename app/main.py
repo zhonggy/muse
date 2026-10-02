@@ -5,6 +5,7 @@ import asyncio
 import base64
 import copy
 import csv
+import hashlib
 import io
 import json
 import logging
@@ -696,6 +697,41 @@ async def healthz() -> dict:
     return {"ok": True, "ts": time.time(), "browser": bool(
         browser_mod.manager._browser and browser_mod.manager._browser.is_connected()
     )}
+
+
+def _asset_version() -> str:
+    """静态资源的版本号（内容哈希）。
+
+    为什么需要：Cloudflare 默认会按扩展名缓存 .js/.css（4 小时）。
+    发布新版本后浏览器/边缘节点拿到的还是旧文件，表现就是
+    「按钮点了没反应」（旧 JS 里没有新的处理逻辑）。
+    把哈希拼到 URL 后面，内容一变 URL 就变，缓存自然失效。
+    """
+    digest = hashlib.sha1()
+    for name in ("app.js", "style.css"):
+        path = STATIC_DIR / name
+        if path.exists():
+            digest.update(path.read_bytes())
+    return digest.hexdigest()[:10]
+
+
+@app.get("/")
+async def index_page() -> HTMLResponse:
+    """动态渲染 index.html，注入资源版本号。
+
+    HTML 本身不带扩展名，Cloudflare 默认不缓存，所以每次都能拿到新版本号。
+    """
+    html_path = STATIC_DIR / "index.html"
+    if not html_path.exists():
+        return HTMLResponse("<h1>static/index.html 缺失</h1>", status_code=500)
+    html = html_path.read_text("utf-8").replace("__ASSET_VERSION__", _asset_version())
+    return HTMLResponse(
+        html,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
 
 
 if STATIC_DIR.exists():

@@ -106,6 +106,19 @@
     toast(e.message || String(e), 'err');
   });
 
+  // 耗时操作期间把按钮置灰，否则用户不知道到底点没点上
+  async function withBusy(btn, label, fn) {
+    const old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = label;
+    try {
+      return await fn();
+    } finally {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
+  }
+
   // ------------------------------------------------------------------
   // WebSocket
   // ------------------------------------------------------------------
@@ -612,68 +625,74 @@
   }
 
   function setupSettings() {
-    $('btnSaveSettings').addEventListener('click', guard(async () => {
-      const patch = {};
-      for (const [id, key] of Object.entries(SETTING_FIELDS)) {
-        const el = $(id);
-        if (!el) continue;
-        if (key === 'skymail_password' && !el.value) continue;
-        let v = el.value;
-        if (['code_timeout', 'concurrency', 'step_timeout'].includes(key)) v = parseInt(v, 10) || 0;
-        if (['code_poll_interval', 'screenshot_interval'].includes(key)) v = parseFloat(v) || 0;
-        patch[key] = v;
-      }
-      for (const [id, key] of Object.entries(SETTING_CHECKS)) {
-        const el = $(id);
-        if (el) patch[key] = el.checked;
-      }
-      await api('PUT', '/api/settings', patch);
-      clearDirty();
-      $('settingsResult').textContent = '已保存 ✓';
-      toast('设置已保存', 'ok');
-    }));
+    $('btnSaveSettings').addEventListener('click', guard(() => withBusy(
+      $('btnSaveSettings'), '保存中…', async () => {
+        const patch = {};
+        for (const [id, key] of Object.entries(SETTING_FIELDS)) {
+          const el = $(id);
+          if (!el) continue;
+          if (key === 'skymail_password' && !el.value) continue;
+          let v = el.value;
+          if (['code_timeout', 'concurrency', 'step_timeout'].includes(key)) v = parseInt(v, 10) || 0;
+          if (['code_poll_interval', 'screenshot_interval'].includes(key)) v = parseFloat(v) || 0;
+          patch[key] = v;
+        }
+        for (const [id, key] of Object.entries(SETTING_CHECKS)) {
+          const el = $(id);
+          if (el) patch[key] = el.checked;
+        }
+        await api('PUT', '/api/settings', patch);
+        clearDirty();
+        $('settingsResult').textContent = '已保存 ✓';
+        toast('设置已保存', 'ok');
+      },
+    )));
 
-    $('btnTestSkymail').addEventListener('click', guard(async () => {
-      $('skymailResult').textContent = '测试中…';
-      const r = await api('POST', '/api/skymail/test', {
-        skymail_base_url: $('s_base').value.trim(),
-        skymail_email: $('s_email').value.trim(),
-        skymail_password: $('s_password').value,
-        create: $('skymailCreate').checked,
-      });
-      const parts = [`✓ ${r.user}`];
-      parts.push(`可用域名 ${(r.domains || []).join(', ') || '无'}`);
-      parts.push(`可见邮箱 ${r.accounts.length} 个`);
-      if (r.email_list_ok === false) {
-        parts.push('⚠️ /api/email/list 不可用，将改用 /api/allEmail/list 收码');
-      }
-      if (r.created) parts.push(`试建成功：${r.created.email}`);
-      $('skymailResult').textContent = parts.join(' | ');
-    }));
+    $('btnTestSkymail').addEventListener('click', guard(() => withBusy(
+      $('btnTestSkymail'), '测试中…', async () => {
+        $('skymailResult').textContent = '测试中…';
+        const r = await api('POST', '/api/skymail/test', {
+          skymail_base_url: $('s_base').value.trim(),
+          skymail_email: $('s_email').value.trim(),
+          skymail_password: $('s_password').value,
+          create: $('skymailCreate').checked,
+        });
+        const parts = [`✓ ${r.user}`];
+        parts.push(`可用域名 ${(r.domains || []).join(', ') || '无'}`);
+        parts.push(`可见邮箱 ${r.accounts.length} 个`);
+        if (r.email_list_ok === false) {
+          parts.push('⚠️ /api/email/list 不可用，将改用 /api/allEmail/list 收码');
+        }
+        if (r.created) parts.push(`试建成功：${r.created.email}`);
+        $('skymailResult').textContent = parts.join(' | ');
+      },
+    )));
 
-    $('btnTestResin').addEventListener('click', guard(async () => {
-      $('resinResult').textContent = '测试中…（反代 + 正代各打两次 IP 回显）';
-      const r = await api('POST', '/api/resin/test', {
-        resin_url: $('s_resin_url').value.trim(),
-        resin_platform_name: $('s_resin_platform_name').value.trim(),
-      });
-      const parts = [`Platform=${r.config.platform}`];
-      if (r.reverse) {
-        parts.push(`反代 IP=${r.reverse.ip}${r.reverse.sticky ? ' ✓粘性' : ' ✗粘性异常'}`);
-      } else {
-        parts.push(`反代失败：${r.reverse_error || '未知'}`);
-      }
-      if (r.forward) {
-        parts.push(`正代 IP=${r.forward.ip}`);
-      } else {
-        parts.push(`正代失败：${r.forward_error || '未知'}`);
-      }
-      if (typeof r.same_ip === 'boolean') {
-        parts.push(r.same_ip ? '✓ 正反代同一出口' : '⚠ 正反代出口不同');
-      }
-      $('resinResult').textContent = parts.join(' | ');
-      if (r.hint) toast(r.hint, 'err');
-    }));
+    $('btnTestResin').addEventListener('click', guard(() => withBusy(
+      $('btnTestResin'), '测试中…', async () => {
+        $('resinResult').textContent = '测试中…（反代打两次验粘性 + 正代一次）';
+        const r = await api('POST', '/api/resin/test', {
+          resin_url: $('s_resin_url').value.trim(),
+          resin_platform_name: $('s_resin_platform_name').value.trim(),
+        });
+        const parts = [`Platform=${r.config.platform}`];
+        if (r.reverse) {
+          parts.push(`反代 IP=${r.reverse.ip}${r.reverse.sticky ? ' ✓粘性' : ' ✗粘性异常'}`);
+        } else {
+          parts.push(`反代失败：${r.reverse_error || '未知'}`);
+        }
+        if (r.forward) {
+          parts.push(`正代 IP=${r.forward.ip}`);
+        } else {
+          parts.push(`正代失败：${r.forward_error || '未知'}`);
+        }
+        if (typeof r.same_ip === 'boolean') {
+          parts.push(r.same_ip ? '✓ 正反代同一出口' : '⚠ 正反代出口不同');
+        }
+        $('resinResult').textContent = parts.join(' | ');
+        if (r.hint) toast(r.hint, 'err');
+      },
+    )));
 
     $('btnCreate').addEventListener('click', guard(createTasks));
     $('btnStartAll').addEventListener('click', guard(async () => {

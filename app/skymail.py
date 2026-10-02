@@ -188,6 +188,25 @@ class SkymailClient:
         headers.update(self.resin.account_header(who))
         return self.resin.reverse_url(url)
 
+    @staticmethod
+    def _http_error(resp: Any, resin: Any) -> SkymailError:
+        """把 HTTP 错误转成可读的异常；Resin 认证失败单独提示。"""
+        body = resp.text[:300]
+        if resin is not None and (
+            resp.status_code in (403, 407)
+            or "Proxy authentication failed" in body
+            or "AUTH_FAILED" in body
+            or "Proxy authentication required" in body
+        ):
+            return SkymailError(
+                f"Resin 代理认证失败（HTTP {resp.status_code}）—— "
+                "这不是 skymail 的问题。resin_url 末尾的 Token 必须是「代理令牌」"
+                "（服务端 RESIN_PROXY_TOKEN），不是控制台登录用的「管理端令牌」"
+                "（RESIN_ADMIN_TOKEN）。可在「设置 → Resin 代理池」点「测试连通性」排查，"
+                "或临时取消勾选「启用 Resin」直连验证 skymail 本身。"
+            )
+        return SkymailError(f"HTTP {resp.status_code}: {body}")
+
     async def _request(
         self,
         method: str,
@@ -200,7 +219,7 @@ class SkymailClient:
         url = self._via_resin(self._resolve(path, params), headers)
         resp = await self._client.request(method, url, headers=headers, **kwargs)
         if resp.status_code >= 400:
-            raise SkymailError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+            raise self._http_error(resp, self.resin)
         try:
             payload = resp.json()
         except ValueError:
@@ -232,7 +251,7 @@ class SkymailClient:
             json={"email": self.email, "password": self.password},
         )
         if resp.status_code >= 400:
-            raise SkymailError(f"登录失败 HTTP {resp.status_code}: {resp.text[:200]}")
+            raise self._http_error(resp, self.resin)
         payload = resp.json()
         if payload.get("code") != 200:
             raise SkymailError(f"登录失败：{payload.get('message')}")
