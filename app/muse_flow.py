@@ -621,47 +621,36 @@ class MuseFlow:
             new_pages.append(p)
 
         self.page.context.on("page", _on_page)
-        await self.click_button("verify_age", timeout_ms=30000)
-        await self.page.wait_for_timeout(4000)
-
-        checkout: Page | None = next(
-            (p for p in new_pages if not p.is_closed()), None
-        )
+        checkout = await self._open_checkout(new_pages)
         if checkout is None:
-            await self.log("未弹出结账标签页，尝试兜底按钮「打开安全结账」", "warn")
-            if await self.click_button("open_checkout", timeout_ms=15000, required=False):
-                await self.page.wait_for_timeout(4000)
-                checkout = next((p for p in new_pages if not p.is_closed()), None)
-
-        target = checkout or self.page
-        if checkout:
-            await self.log(f"结账页已在标签页打开：{checkout.url}")
-            try:
-                await checkout.wait_for_load_state("domcontentloaded", timeout=30_000)
-            except Exception:
-                pass
-
-        await self.rt.snap("checkout", page=target)
+            await self.dump_payment_page(self.page)
+            raise FlowError(
+                "点「验证年龄」后始终没有弹出结账标签页。"
+                "页面提示需在打开的选项卡里完成验证，但没有新页 —— "
+                "可能是弹窗被拦或按钮没真正触发。"
+            )
+        self.rt.set_active_page(checkout)
+        await self.rt.snap("checkout", page=checkout)
 
         card = await self.rt.resolve_card()
-        filled = await self.fill_card_form(target, card)
+        filled = await self.fill_card_form(checkout, card)
         if not filled:
             await self.log("未能自动识别支付表单字段", "warn")
             # 关键：不能直接暂停。结账页是慢渲染的（Stripe Elements 这类分帧加载）
             # 所以要轮询等字段出现，而不是立刻拉人来手动填。
-            filled = await self._retry_fill_after_render(target, card)
+            filled = await self._retry_fill_after_render(checkout, card)
             if not filled:
                 await self.rt.wait_for_manual(
                     "未识别到支付表单，请在控制台实时画面上手动完成绑卡"
                 )
         else:
-            await self.rt.snap("card-filled", page=target)
+            await self.rt.snap("card-filled", page=checkout)
             await self.rt.set_step("提交支付")
-            submitted = await self.click_card_submit(target)
+            submitted = await self.click_card_submit(checkout)
             if not submitted:
                 await self.rt.wait_for_manual("未找到提交按钮，请手动点击提交")
 
-        await self.wait_verification_done(target)
+        await self.wait_verification_done(checkout)
 
     # ------------------------------------------------------------------
     # 收尾：兑现邀请码
@@ -884,6 +873,90 @@ class MuseFlow:
                 return
             await asyncio.sleep(0.5)
         await self.log("没等到兑现界面关闭，但不再阻塞流程", "warn")
+
+    async def _click_for_popup(self, texts_key: str, label: str) -> bool:
+        """点一个**会开新标签页**的按钮，只用 Playwright 原生点击。
+
+        为什么不能走 JS 兜底：Camoufox 有意保留了 Firefox 的弹窗拦截
+        （Playwright/geckodriver 默认关掉它，而「关掉」本身就是可检测特征）。
+        而只有**真实点击**才授予 user activation；JS 里 dispatchEvent 出来的
+        合成 click 不授予，window.open 就被拦掉了。
+
+        Camoufox 的补丁说明写得很清楚：
+          “page.click() is unaffected: it synthesizes a real click,
+           which grants a real activation.”
+
+        所以这里只走原生点击，并把**点到的元素**打出来 —— 避免
+        「匹配到了别的元素、点了没反应」这种静默失败。
+        """
+        for text in TEXTS.get(texts_key, []):
+            try:
+                loc = self.page.get_by_role("button", name=text, exact=True)
+                count = await loc.count()
+            except Exception:
+                continue
+            for i in range(min(count, 6)):
+                el = loc.nth(i)
+                try:
+                    if not await el.is_visible() or not await el.is_enabled():
+                        continue
+                    desc = await el.evaluate(
+                        "e => e.tagName + ':' + ((e.innerText||'').trim().slice(0,30))"
+                    )
+                    await el.click(timeout=8000)
+                    await self.log(f"已点击「{text}」（{label}，原生点击 {desc}）")
+                    return True
+                except Exception as exc:
+                    await self.log(
+                        f"点「{text}」失败：{type(exc).__name__}", "debug"
+                    )
+                    continue
+        return False
+
+    async def _wait_new_page(
+        self, new_pages: list[Page], timeout_s: float
+    ) -> Page | None:
+        """轮询等新标签页出现。
+
+        之前是死等 4 秒 —— 不够，弹窗有时要十几秒才出来。
+        """
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            await self.check()
+            for page in new_pages:
+                if page.is_closed():
+                    continue
+                try:
+                    await page.wait_for_load_state("domcontentloaded", timeout=5000)
+                except Exception:
+                    pass
+                await self.log(f"结账标签页已打开：{(page.url or '')[:110]}")
+                return page
+            await asyncio.sleep(0.5)
+        return None
+
+    async def _open_checkout(self, new_pages: list[Page]) -> Page | None:
+        """把结账标签页拿到手。
+
+        实测这个弹窗**有时不出来**（Firefox 弹窗拦截对非受信任点击生效）。
+        所以：原生点击 + 轮询等 20 秒 + 最多重试 3 轮，而不是点一下死等 4 秒。
+        """
+        for attempt in range(3):
+            await self.check()
+            await self._click_for_popup("verify_age", "验证年龄")
+            page = await self._wait_new_page(new_pages, 20)
+            if page is not None:
+                return page
+
+            await self.log(
+                f"第 {attempt + 1} 次点「验证年龄」后 20 秒内没等到新标签页", "warn"
+            )
+            if await self._click_for_popup("open_checkout", "打开安全结账"):
+                page = await self._wait_new_page(new_pages, 15)
+                if page is not None:
+                    return page
+            await self.page.wait_for_timeout(2000)
+        return None
 
     # ------------------------------------------------------------------
     # 支付表单
