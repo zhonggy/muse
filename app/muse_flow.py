@@ -647,9 +647,13 @@ class MuseFlow:
         filled = await self.fill_card_form(target, card)
         if not filled:
             await self.log("未能自动识别支付表单字段", "warn")
-            await self.rt.wait_for_manual(
-                "未识别到支付表单，请在控制台实时画面上手动完成绑卡"
-            )
+            # 关键：不能直接暂停。结账页是慢渲染的（Stripe Elements 这类分帧加载）
+            # 所以要轮询等字段出现，而不是立刻拉人来手动填。
+            filled = await self._retry_fill_after_render(target, card)
+            if not filled:
+                await self.rt.wait_for_manual(
+                    "未识别到支付表单，请在控制台实时画面上手动完成绑卡"
+                )
         else:
             await self.rt.snap("card-filled", page=target)
             await self.rt.set_step("提交支付")
@@ -893,13 +897,82 @@ class MuseFlow:
                 continue
             if not info or not info.get("marked"):
                 continue
-            await self.log(f"在 {frame.url[:80] or 'main'} 发现支付字段：{info['marked']}")
+            await self.log(
+                f"在 {frame.url[:80] or 'main'} 发现支付字段：{info['marked']}"
+            )
             try:
                 await self._fill_marked(frame, card, info)
                 return True
             except Exception as exc:
                 await self.log(f"填写支付字段失败：{exc}", "warn")
         return False
+
+    async def _retry_fill_after_render(self, page: Page, card: dict) -> bool:
+        """结账页是慢渲染的（Stripe Elements 分帧加载 iframe），轮询等字段出现。
+
+        Meta 的结账页是 auth.meta.com/payments/checkout，底层多半是
+        Stripe Elements —— 卡号在专门的 iframe 里，页面打开后要过几秒才出现，
+        所以「探一次没有」不等于「没有」。
+        """
+        for attempt in range(15):            # 15 x 2s = 30s
+            await self.check()
+            await page.wait_for_timeout(2000)
+            if await self.fill_card_form(page, card):
+                await self.log(f"支付字段在第 {attempt + 1} 次探测后出现并已填写")
+                return True
+            if attempt in (3, 8):
+                await self.dump_payment_page(page)
+        await self.log("30 秒内仍未等到支付表单字段", "warn")
+        await self.dump_payment_page(page)
+        await self.rt.snap("checkout-nofield", page=page)
+        return False
+
+    async def dump_payment_page(self, page: Page) -> None:
+        """把结账页的结构打出来 —— 选结账页字段识别失败时，没这个就没法调。
+
+        要能看到：各 frame 的 url、每个 frame 里 input 的关键属性、
+        各 frame 里按钮的文案。敏感字段（卡号/CVV）的**值**绝不能打。
+        """
+        for i, frame in enumerate(page.frames):
+            try:
+                info = await frame.evaluate(
+                    "() => window.__museHelpers ? window.__museHelpers.describe()"
+                    " : {url: '', title: '', body: '', inputs: 0, buttons: 1}"
+                )
+                fields = await frame.evaluate(CARD_PROBE_JS, {})
+                buttons = await frame.evaluate(
+                    "() => window.__museHelpers"
+                    " ? window.__museHelpers.listClickables('center') : []"
+                )
+            except Exception:
+                continue
+
+            urls = (frame.url or "")[:120]
+            body = (info.get("body") or "")[:220].replace("\n", " ")
+            await self.log(
+                f"[frame {i}] url={urls}\n"
+                f"        marked={fields.get('marked')}\n"
+                f"        buttons={buttons[:8]}\n"
+                f"        body={body}"
+            )
+
+            # input 的属性清单（不含 value，避免卡号泄露）
+            inputs = []
+            try:
+                inputs = await frame.evaluate(
+                    """() => (window.__museHelpers
+                            ? window.__museHelpers.deepAll('input') : []).slice(0,8)
+                       .map(e => ({ a: e.getAttribute('autocomplete'),
+                                    n: e.getAttribute('name'),
+                                    i: e.id,
+                                    p: e.getAttribute('placeholder'),
+                                    t: e.getAttribute('type') }))"""
+                )
+            except Exception:
+                pass
+            if inputs:
+                await self.log(f"        inputs={inputs}")
+        await self.rt.snap("checkout-dump")
 
     async def _fill_marked(self, frame: Any, card: dict, info: dict) -> None:
         marked = set(info.get("marked") or [])
