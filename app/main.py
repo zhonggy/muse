@@ -507,6 +507,42 @@ async def api_stop_all(_: None = Depends(auth)) -> dict:
     return {"stopped": n}
 
 
+@app.get("/api/tasks/{task_id}/page")
+async def api_task_page(task_id: str, _: None = Depends(auth)) -> dict:
+    """把运行中任务当前所有标签页的文本打出来。
+
+    用途：任务卡在某个阶段时，靠它看页面到底显示什么（错误提示？3DS？），
+    比截图好用 —— 截图在控制台要人眼看，这个是纯文本。
+    返回的 body 截断到 3000 字符，不会把整个 DOM 吐出来。
+    """
+    rt = runner.runtime(task_id)
+    if rt is None:
+        raise HTTPException(404, "任务不在运行中")
+    context = rt.context
+    if context is None:
+        raise HTTPException(404, "任务没有打开的浏览器")
+
+    pages = []
+    for i, page in enumerate(context.pages):
+        entry: dict = {"index": i, "url": page.url, "is_active": page is rt.active_page}
+        try:
+            entry["title"] = await page.title()
+            entry["body"] = (
+                await page.evaluate(
+                    "() => (document.body ? document.body.innerText : '')"
+                )
+            )[:3000]
+            entry["buttons"] = await page.evaluate(
+                "() => window.__museHelpers"
+                " ? window.__museHelpers.listClickables('center') : []"
+            )
+        except Exception as exc:
+            entry["error"] = f"{type(exc).__name__}: {exc}"[:200]
+        pages.append(entry)
+    return {"task_id": task_id, "status": rt.task.get("status"),
+            "step": rt.task.get("step"), "pages": pages}
+
+
 @app.post("/api/tasks/clear")
 async def api_clear_tasks(payload: dict | None = Body(default=None),
                           _: None = Depends(auth)) -> dict:

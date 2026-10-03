@@ -1192,14 +1192,45 @@ class MuseFlow:
     # 等待验证完成
     # ------------------------------------------------------------------
 
+    #: 结账页出现这些字样说明支付失败。
+    #: 刻意保守 —— 宁可漏报也不能误报，误报会把已经成功的任务判失败。
+    CHECKOUT_FAILURE_MARKERS = (
+        "卡被拒", "银行卡被拒", "付款失败", "支付失败", "交易被拒",
+        "无法处理你的付款", "无法完成付款", "请更换付款方式",
+        "declined", "payment failed", "card was declined",
+    )
+
     async def wait_verification_done(self, checkout: Page) -> None:
+        """等年龄验证走完。
+
+        实测正常路径：结账页提交后等一会儿 → 结账标签页**自动关闭**
+        → 主页从 /access/verification 变成聊天界面。
+
+        异常路径必须能分辨，不能干等：
+          - 卡被拒 / 表单报错 → 结账页上有错误文案
+          - 3DS → 需要人工
+          - 什么都没发生 → 超时，把结账页内容 dump 出来
+        """
         await self.rt.set_step("等待年龄验证完成")
         deadline = time.monotonic() + 300
         manual_prompted = False
+        last_note = 0.0
+
         while time.monotonic() < deadline:
             await self.check()
 
-            # 3DS / 额外验证：交给人工
+            # 结账页关闭 = 正常完成
+            if checkout is not self.page and checkout.is_closed():
+                await self.log("结账标签页已关闭，验证完成", "success")
+                break
+
+            # 支付失败
+            failure = await self._checkout_failure(checkout)
+            if failure:
+                await self.dump_payment_page(checkout)
+                raise FlowError(f"结账页提示支付失败（命中「{failure}」）")
+
+            # 3DS / 二次验证：交给人工
             if not manual_prompted:
                 reason = await self._needs_manual(checkout)
                 if reason:
@@ -1210,42 +1241,112 @@ class MuseFlow:
                         "请在控制台实时画面上手动完成"
                     )
 
-            if checkout is not self.page:
-                if checkout.is_closed():
-                    await self.log("结账标签页已关闭", "success")
-                    break
             info = await self.describe()
             url = (info.get("url") or "").lower()
             if URLS["verification"] not in url and "/access/" not in url:
                 await self.log(f"已离开验证页：{info.get('url')}", "success")
                 break
-            if "验证成功" in (info.get("body") or "") or "已完成" in (info.get("body") or ""):
-                await self.log("页面提示验证完成", "success")
-                break
-            await asyncio.sleep(2)
 
-        # 回到主页
-        for _ in range(60):
-            await self.check()
-            if checkout is not self.page and not checkout.is_closed():
-                try:
+            # 每 20 秒把结账页状态记一笔 —— 卡住时这是唯一的线索
+            now = time.monotonic()
+            if now - last_note > 20:
+                last_note = now
+                await self._log_checkout_state(checkout)
+
+            await asyncio.sleep(2)
+        else:
+            await self.log("等待验证完成超时（300s）", "warn")
+            await self.dump_payment_page(checkout)
+            await self.rt.snap("verify-timeout")
+
+        ok = await self._back_to_home(checkout)
+        await self.rt.snap("done")
+        await self.rt.save_session()
+        if not ok:
+            # 回不到聊天界面 = 年龄验证实际没过，这个账号用不了。
+            # 报成功会把没用的账号当成好的，所以这里直接判失败。
+            raise FlowError(
+                "年龄验证未真正通过：主页一直停在 /access/ 下，没进入聊天界面"
+            )
+        await self.log("年龄验证流程结束，登录态已保存", "success")
+    async def _checkout_failure(self, page: Page) -> str | None:
+        try:
+            body = await page.evaluate(
+                "() => (document.body ? document.body.innerText : '')"
+            ) or ""
+        except Exception:
+            return None
+        low = body.lower()
+        for marker in self.CHECKOUT_FAILURE_MARKERS:
+            if marker.lower() in low:
+                return marker
+        return None
+
+    async def _log_checkout_state(self, page: Page) -> None:
+        """把结账页当前状态记一笔，便于判断它到底卡在哪。"""
+        try:
+            url = (page.url or "")[:110]
+            body = await page.evaluate(
+                "() => (document.body ? document.body.innerText : '')"
+            ) or ""
+            buttons = await page.evaluate(
+                "() => window.__museHelpers"
+                " ? window.__museHelpers.listClickables('center').slice(0,6) : []"
+            )
+        except Exception as exc:
+            await self.log(f"结账页状态读取失败：{type(exc).__name__}", "debug")
+            return
+        flat = " ".join(body.split())[:180]
+        await self.log(
+            f"结账页仍在等待：closed={page.is_closed()} url={url}\n"
+            f"        buttons={buttons}\n"
+            f"        body={flat}",
+            "debug",
+        )
+
+    async def _back_to_home(self, checkout: Page, timeout_s: int = 120) -> bool:
+        """关掉结账页，等主页回到聊天界面。返回是否真的回到了。
+
+        注意不能用「reload 60 次」那种写法：主页停在 /access/ 时每次
+        reload 都可能等 30s，60 次就是半小时 —— 之前就是这样卡死的。
+        这里改用总时限控制，且只主动 reload 两次（多了没意义还慢）。
+        """
+        if checkout is not self.page:
+            try:
+                if not checkout.is_closed():
                     await checkout.close()
-                except Exception:
-                    pass
-            await self.page.bring_to_front()
+                    await self.log("已关闭结账标签页")
+            except Exception:
+                pass
+
+        deadline = time.monotonic() + timeout_s
+        reloaded = 0
+        while time.monotonic() < deadline:
+            await self.check()
+            try:
+                await self.page.bring_to_front()
+            except Exception:
+                pass
             info = await self.describe()
             url = (info.get("url") or "").lower()
             if "/access/" not in url:
-                break
-            try:
-                await self.page.reload(wait_until="domcontentloaded", timeout=30_000)
-            except Exception:
-                pass
-            await asyncio.sleep(2)
+                await self.log(f"已回到主界面：{info.get('url')}")
+                return True
+            if reloaded < 2:
+                reloaded += 1
+                try:
+                    await self.page.reload(
+                        wait_until="domcontentloaded", timeout=20_000
+                    )
+                except Exception:
+                    pass
+            await asyncio.sleep(3)
 
-        await self.rt.snap("done")
-        await self.rt.save_session()
-        await self.log("年龄验证流程结束，登录态已保存", "success")
+        await self.log(
+            f"{timeout_s}s 内主页仍未离开验证页，可能验证没真正通过", "warn"
+        )
+        await self.dump_payment_page(self.page)
+        return False
 
     async def _needs_manual(self, page: Page) -> str | None:
         """返回需要人工介入的**原因**，不需要时返回 None。
