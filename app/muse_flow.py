@@ -1165,14 +1165,44 @@ class MuseFlow:
                 pass
 
     async def click_card_submit(self, page: Page) -> bool:
+        """点结账页的提交按钮。
+
+        实测 Meta 结账页的提交按钮文案是「确认」，而且它**不一定是
+        <button>** —— 可能是个 div[role=button] / a / li。
+        原实现只用 get_by_role("button") + exact=False：
+          - 「确认」匹配不到（它不是 button）
+          - 「支付」却匹到了「支付方式」那一块的某个按钮
+        结果日志写「已点击支付提交按钮「支付」」，实际点错了元素。
+
+        改成：先在所有可点元素里**精确**匹配文案（覆盖 div/a/li），
+        再退回原生 button 的精确匹配。
+        """
         candidates = TEXTS["card_submit"]
         deadline = time.monotonic() + 25
         while time.monotonic() < deadline:
             await self.check()
             for label in candidates:
+                # a) 任意可点元素，精确匹配文案
                 for frame in page.frames:
                     try:
-                        loc = frame.get_by_role("button", name=label, exact=False)
+                        ok = await frame.evaluate(
+                            "([sel, label]) => window.__museHelpers"
+                            ".clickByText(sel, label, true)",
+                            [
+                                "button, [role='button'], a, li, [role='menuitem']",
+                                label,
+                            ],
+                        )
+                    except Exception:
+                        continue
+                    if ok:
+                        await self.log(f"已点击支付提交按钮「{label}」")
+                        return True
+
+                # b) 原生 button 精确匹配兜底
+                for frame in page.frames:
+                    try:
+                        loc = frame.get_by_role("button", name=label, exact=True)
                         count = await loc.count()
                     except Exception:
                         continue
@@ -1228,7 +1258,13 @@ class MuseFlow:
             failure = await self._checkout_failure(checkout)
             if failure:
                 await self.dump_payment_page(checkout)
-                raise FlowError(f"结账页提示支付失败（命中「{failure}」）")
+                await self.rt.snap("checkout-failed", page=checkout)
+                raise FlowError(
+                    f"结账页报错（命中「{failure}」）—— 这是**发卡行/支付环节**的问题，"
+                    "不是脚本问题。换一张能正常扣款的卡再试。"
+                    "（该页会先扣 US$1.00 验证，5-7 个工作日退回，"
+                    "卡需要支持这种小额预授权）"
+                )
 
             # 3DS / 二次验证：交给人工
             if not manual_prompted:

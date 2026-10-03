@@ -106,8 +106,10 @@ TEXTS: dict[str, list[str]] = {
     "verify_age": ["验证年龄", "验证年龄以继续"],
     "open_checkout": ["打开安全结账", "打开结账", "Open secure checkout"],
     "card_submit": [
-        "继续", "确认", "提交", "支付", "订阅", "开始使用", "完成", "保存",
-        "Continue", "Confirm", "Submit", "Pay", "Subscribe", "Start", "Save",
+        # 实测 Meta 结账页的提交按钮就是「确认」，放最前
+        "确认", "继续", "提交", "完成", "保存", "开始使用",
+        "支付", "订阅",
+        "Confirm", "Continue", "Submit", "Done", "Save", "Start", "Pay",
     ],
     # 年龄验证页「已通过 / 回到主页」的判定文案
     "verified_ok": ["开始使用", "开始", "进入", "继续使用"],
