@@ -1200,12 +1200,15 @@ class MuseFlow:
             await self.check()
 
             # 3DS / 额外验证：交给人工
-            if not manual_prompted and await self._needs_manual(checkout):
-                manual_prompted = True
-                await self.log("检测到 3DS / 二次验证页面", "warn")
-                await self.rt.wait_for_manual(
-                    "检测到 3DS 或二次验证，请在控制台实时画面上手动完成"
-                )
+            if not manual_prompted:
+                reason = await self._needs_manual(checkout)
+                if reason:
+                    manual_prompted = True
+                    await self.log(f"检测到需要人工介入：{reason}", "warn")
+                    await self.rt.wait_for_manual(
+                        f"检测到 3DS 或二次验证（{reason[:70]}），"
+                        "请在控制台实时画面上手动完成"
+                    )
 
             if checkout is not self.page:
                 if checkout.is_closed():
@@ -1244,12 +1247,32 @@ class MuseFlow:
         await self.rt.save_session()
         await self.log("年龄验证流程结束，登录态已保存", "success")
 
-    async def _needs_manual(self, page: Page) -> bool:
+    async def _needs_manual(self, page: Page) -> str | None:
+        """返回需要人工介入的**原因**，不需要时返回 None。
+
+        之前只返回 bool 且对每个 frame 的 URL 子串做匹配 —— 而结账页
+       自身的 URL 是 auth.meta.com，里面就带着 auth 字样，一打就误报。
+        所以：
+          - URL 判定只看**与主页面不同源**的 frame（3DS 的 ACS 页面是
+            结账页里嵌套的独立 iframe，主结账页不可能算）
+          - 同时返回具体是哪条命中，日志里能直接看到
+        """
+        main_url = ""
+        try:
+            main_url = (page.url or "").lower()
+        except Exception:
+            main_url = ""
         try:
             for frame in page.frames:
                 url = (frame.url or "").lower()
-                if any(k in url for k in ("acs.", "3ds", "challenge", "authentication")):
-                    return True
+                if not url or url == main_url:
+                    continue
+                if url in main_url or main_url in url:
+                    continue            # 同一个页面/子页，不算 ACS
+                hit = next((k for k in ("acs.", "3ds", "challenge", "authentication")
+                            if k in url), None)
+                if hit:
+                    return f"发现疑似 ACS frame（含 {hit}）：{url[:120]}"
         except Exception:
             pass
         try:
@@ -1257,7 +1280,13 @@ class MuseFlow:
                 "() => (document.body ? document.body.innerText : '')"
             )) or ""
         except Exception:
-            return False
-        markers = ("3D Secure", "3DS", "短信验证码", "银行验证", "发卡行验证",
-                   "Verify your identity", "authentication code")
-        return any(m in body for m in markers)
+            return None
+        markers = (
+            "3D Secure", "3DS", "短信验证码", "银行验证", "发卡行验证",
+            "发卡行短信", "Verify your identity", "authentication code",
+            "进入你的银行", "验证你的身份",
+        )
+        for m in markers:
+            if m in body:
+                return f"页面出现「{m}」"
+        return None

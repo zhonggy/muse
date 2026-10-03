@@ -142,7 +142,13 @@ class TaskRuntime:
         while not self._stop.is_set():
             try:
                 await asyncio.sleep(interval)
-                if not self.settings.get("live_view", True):
+                # 等人工接管时要**强制**推画面：用户需要看到并操作那个页面，
+                # 这比「控制台里关了实时省带宽」优先得多。
+                forced = (
+                    self.task.get("status") == STATUS_PAUSED
+                    and self.task.get("needs") == "manual"
+                )
+                if not forced and not self.settings.get("live_view", True):
                     continue
                 if self.bus.subscriber_count:
                     await self.snap()
@@ -183,6 +189,12 @@ class TaskRuntime:
         self.task["message"] = reason
         await self.publish_task()
         await self.log(f"⏸ 任务暂停：{reason}", "warn")
+
+        # 需要人工时**必须**把实时画面推出去 —— 即使控制台设置了关掉。
+        # 否则提示用户「请在控制台实时画面上手动完成」，他却什么都看不到。
+        if needs in ("manual", "card"):
+            await self.snap(f"paused-{needs}")
+
         await self._wait_resume()
         self.task["status"] = STATUS_RUNNING
         self.task["needs"] = None
@@ -319,10 +331,7 @@ class TaskRuntime:
         if card_id and self.settings.get("auto_fill_card", True):
             card = self.store.get_card_secret(str(card_id))
             if card:
-                await self.log(
-                    f"使用控制台保存的卡片：{card.get('label') or ''} "
-                    f"****{card['number'][-4:]}"
-                )
+                await self.log(f"使用控制台保存的卡片：{card.get('label') or ''}")
                 return card
             await self.log(f"卡片 {card_id} 不存在，转为等待手动提供", "warn")
         return await self.wait_for_card()
